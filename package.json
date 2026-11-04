@@ -1,0 +1,6 @@
+{
+  "name": "opencode-global-habit-profile",
+  "private": true,
+  "type": "module",
+  "main": "index.js"
+}

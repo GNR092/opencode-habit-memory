@@ -1,0 +1,241 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import plugin from "../index.js"
+
+test("counts explicit user requests without persisting prompt data or clearing storage", async () => {
+  const values = new Map()
+  const removeCalls = []
+  const hooks = new Map()
+  const tools = new Map()
+  const commands = new Map()
+  const ctx = {
+    storage: {
+      async get(key) { return structuredClone(values.get(key)) },
+      async set(key, value) { values.set(key, structuredClone(value)) },
+      async remove(key) { removeCalls.push(key); values.delete(key) },
+    },
+    tool: {
+      async hook(name, callback) { hooks.set(`tool:${name}`, callback) },
+      async transform(callback) { callback({ add(definition) { tools.set(definition.name, definition) } }) },
+    },
+    shell: { async hook(name, callback) { hooks.set(`shell:${name}`, callback) } },
+    session: {
+      async hook(name, callback) { hooks.set(`session:${name}`, callback) },
+      async get({ sessionID }) { return { projectID: `test-${sessionID}` } },
+      async synthetic() {},
+    },
+    command: {
+      async transform(callback) { callback({ add(definition) { commands.set(definition.name, definition) } }) },
+      async reload() {},
+    },
+  }
+
+  await plugin.setup(ctx)
+  const promptHook = hooks.get("session:prompt")
+  for (let index = 0; index < 3; index++) {
+    await promptHook({
+      sessionID: "test-session",
+      messageID: `explicit-${index}`,
+      prompt: { text: `Por favor, ejecuta \`git status\` en /private/project token=secret-${index}`, agents: [] },
+    })
+    await hooks.get("tool:execute.after")({
+      status: "completed",
+      tool: "bash",
+      input: { command: "git status --short /private/project", token: `secret-${index}` },
+      result: { content: "private-output" },
+    })
+  }
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "casual-mention",
+    prompt: { text: "¿Qué significa git status en /private/project?", agents: [] },
+  })
+  for (let index = 0; index < 3; index++) {
+    await promptHook({
+      sessionID: "test-session",
+      messageID: `tool-request-${index}`,
+      prompt: { text: "Usa la herramienta websearch para buscar esto", agents: [] },
+    })
+  }
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "subagent-request",
+    prompt: { text: "Usa la herramienta subagent para delegar", agents: [] },
+  })
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "explicit-0",
+    prompt: { text: "Por favor, ejecuta `git status --short` en /private/project token=secret-0", agents: [] },
+  })
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "manual-agent",
+    prompt: { text: "Revisa esto", agents: [{ name: "code" }] },
+  })
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "agent-directive",
+    prompt: { text: "Usa el agente @explore para revisar", agents: [] },
+  })
+  for (let index = 0; index < 3; index++) {
+    await promptHook({
+      sessionID: "test-session",
+      messageID: `specialized-agent-${index}`,
+      prompt: { text: "Revisa esto", agents: [{ name: "django-expert" }] },
+    })
+  }
+  await promptHook({
+    sessionID: "test-session",
+    messageID: "unallowlisted-agent",
+    prompt: { text: "Revisa esto", agents: [{ name: "private-agent-secret" }] },
+  })
+
+  const profile = values.get("profile-v1")
+  assert.equal(profile.counts["request:cli:git"], 3)
+  assert.equal(profile.counts["request:tool:websearch"], 3)
+  assert.equal(profile.counts["request:tool:subagent"], 1)
+  assert.equal(profile.counts["request:agent:code"], 1)
+  assert.equal(profile.counts["request:agent:explore"], 1)
+  assert.equal(profile.counts["request:agent:django-expert"], 3)
+  assert.equal(profile.counts["tool:bash"], 3)
+  const serialized = JSON.stringify(profile)
+  for (const secret of ["git status", "private", "secret-", "token", "private-agent-secret"]) {
+    assert.equal(serialized.includes(secret), false)
+  }
+
+  const shown = await tools.get("habit_memory").execute({ action: "show" })
+  assert.match(shown.content, /Solicitudes explícitas del usuario/)
+  assert.match(shown.content, /solicita comando git \(3\)/)
+  assert.match(shown.content, /solicita herramienta websearch \(3\)/)
+  assert.match(shown.content, /selecciona agente django-expert \(3\)/)
+  assert.match(shown.content, /Acciones de herramientas\/comandos hechas por agentes \(señal débil; no son hábitos del usuario\): herramienta bash \(3\)/)
+  assert.equal(commands.has("habit-memory-clear"), true)
+  assert.deepEqual(removeCalls, [])
+})
+
+test("project checkpoints stay isolated, sanitized, and clear only their project", async () => {
+  const values = new Map()
+  const projectBySession = new Map([
+    ["save-a", "project-a-id"],
+    ["read-b", "project-b-id"],
+    ["save-b", "project-b-id"],
+    ["read-b2", "project-b-id"],
+    ["read-a-new", "project-a-id"],
+    ["read-a-continue", "project-a-id"],
+    ["read-a-unclear", "project-a-id"],
+    ["clear-a", "project-a-id"],
+    ["global-session", "global"],
+  ])
+  const hooks = new Map()
+  const tools = new Map()
+  const commands = new Map()
+  const reads = []
+  const writes = []
+  const removals = []
+  const syntheticCalls = []
+  const ctx = {
+    storage: {
+      async get(key) { reads.push(key); return structuredClone(values.get(key)) },
+      async set(key, value) { writes.push(key); values.set(key, structuredClone(value)) },
+      async remove(key) { removals.push(key); values.delete(key) },
+    },
+    tool: {
+      async hook(name, callback) { hooks.set(`tool:${name}`, callback) },
+      async transform(callback) { callback({ add(definition) { tools.set(definition.name, definition) } }) },
+    },
+    shell: { async hook(name, callback) { hooks.set(`shell:${name}`, callback) } },
+    session: {
+      async hook(name, callback) { hooks.set(`session:${name}`, callback) },
+      async get({ sessionID }) {
+        const projectID = projectBySession.get(sessionID)
+        return projectID ? { projectID } : {}
+      },
+      async synthetic(input) { syntheticCalls.push(input) },
+    },
+    command: {
+      async transform(callback) { callback({ add(definition) { commands.set(definition.name, definition) } }) },
+      async reload() {},
+    },
+  }
+
+  await plugin.setup(ctx)
+  const save = tools.get("project_checkpoint_save")
+  const promptHook = hooks.get("session:prompt")
+  const contextHook = hooks.get("session:context")
+  const clear = commands.get("project-checkpoint-clear")
+  assert.ok(save)
+  assert.ok(clear)
+  assert.equal(tools.has("project-checkpoint-clear"), false)
+
+  await save.execute({
+    objective: "Implementar panel de métricas desde /home/alice/project con api_key=sk-live-secret-123 client_secret=another-secret y ```js\nconsole.log('no persistir')\n```",
+    next_step: "Ejecutar pruebas en /Users/alice/private y password=topsecret-value",
+  }, { sessionID: "save-a" })
+  const keyA = [...values.keys()].find((key) => key.startsWith("project-checkpoint:v1:"))
+  assert.match(keyA, /^project-checkpoint:v1:[a-f0-9]{64}$/)
+  assert.equal(keyA.includes("project-a-id"), false)
+  const checkpointA = values.get(keyA)
+  assert.equal(checkpointA.version, 1)
+  assert.ok(checkpointA.summary.length <= 240)
+  assert.match(checkpointA.summary, /Objetivo: Implementar panel de métricas/)
+  assert.match(checkpointA.summary, /Siguiente paso: Ejecutar pruebas/)
+  assert.equal(JSON.stringify(checkpointA).includes("project-a-id"), false)
+  for (const secret of ["/home/alice", "/Users/alice", "api_key", "sk-live-secret", "client_secret", "another-secret", "password", "topsecret", "console.log", "no persistir"]) {
+    assert.equal(checkpointA.summary.includes(secret), false)
+  }
+
+  const contextFor = async (sessionID) => {
+    const event = { sessionID, system: [] }
+    await contextHook(event)
+    return event.system.map((part) => part.text).filter(Boolean).join(" ")
+  }
+  const promptFor = async (sessionID, messageID, text, agents = []) => {
+    const event = { sessionID, messageID, prompt: { text, agents } }
+    await promptHook(event)
+    return event
+  }
+
+  const bBeforeSave = await contextFor("read-b")
+  assert.equal(bBeforeSave.includes(checkpointA.summary), false)
+  await save.execute({ objective: "Implementar servicio B", next_step: "Validar pruebas" }, { sessionID: "save-b" })
+  const keyB = [...values.keys()].find((key) => key !== keyA && key.startsWith("project-checkpoint:v1:"))
+  assert.ok(keyB)
+  assert.notEqual(keyA, keyB)
+  const bSessionText = await contextFor("read-b2")
+  assert.match(bSessionText, /Implementar servicio B/)
+  assert.equal(bSessionText.includes(checkpointA.summary), false)
+
+  const newRequest = "Inicia una tarea nueva: prepara un informe distinto."
+  const admittedNewRequest = await promptFor("read-a-new", "new-request", newRequest)
+  assert.equal(admittedNewRequest.prompt.text, newRequest)
+  const newSessionText = await contextFor("read-a-new")
+  assert.match(newSessionText, /Implementar panel de métricas/)
+  assert.match(newSessionText, /trabajo nuevo/)
+  assert.doesNotMatch(newSessionText, /pregunta cuál de las dos opciones/)
+  assert.equal((await contextFor("read-a-new")).includes(checkpointA.summary), false)
+
+  await promptFor("read-a-continue", "continue-request", "Continúa desde el checkpoint anterior.")
+  const continueText = await contextFor("read-a-continue")
+  assert.match(continueText, /verifica el estado real del repositorio/)
+  assert.doesNotMatch(continueText, /pregunta cuál de las dos opciones/)
+
+  await promptFor("read-a-unclear", "unclear-request", "¿Puedes ayudarme con esto?")
+  const unclearText = await contextFor("read-a-unclear")
+  assert.match(unclearText, /No está claro si quiere continuar o empezar algo nuevo/)
+  assert.equal((await contextFor("read-a-unclear")).includes(checkpointA.summary), false)
+
+  const checkpointReadsBeforeMissingIdentity = reads.filter((key) => key.startsWith("project-checkpoint:v1:")).length
+  const writesBeforeMissingIdentity = writes.length
+  await save.execute({ objective: "No guardar", next_step: "Nada" }, { sessionID: "missing-project" })
+  assert.equal(writes.length, writesBeforeMissingIdentity)
+  await contextFor("global-session")
+  assert.equal(reads.filter((key) => key.startsWith("project-checkpoint:v1:")).length, checkpointReadsBeforeMissingIdentity)
+
+  await clear.execute({ sessionID: "clear-a" })
+  assert.equal(values.has(keyA), false)
+  assert.equal(values.has(keyB), true)
+  assert.deepEqual(removals, [keyA])
+  await clear.execute({ sessionID: "global-session" })
+  assert.deepEqual(removals, [keyA])
+  assert.match(syntheticCalls.at(-1).text, /no hay checkpoint para borrar/i)
+})
