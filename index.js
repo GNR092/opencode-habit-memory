@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto"
+import { getData, saveHabitCounts, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteCheckpoint, importLegacy } from "./src/store.js"
+import { startUiServer } from "./src/ui-server.js"
 
 const storageKey = "profile-v1"
 const checkpointKeyPrefix = "project-checkpoint:v1:"
@@ -38,13 +40,14 @@ let writes = Promise.resolve()
 const seenPromptIDs = new Set()
 const promptIntents = new Map()
 const checkpointNotices = new Set()
+const migratedProjects = new Set()
 
 function emptyProfile() {
   return { version: 1, counts: {} }
 }
 
-async function readProfile(storage) {
-  const profile = await storage.get(storageKey)
+async function readProfile() {
+  const profile = (await getData()).habits
   if (profile?.version !== 1 || !profile.counts || typeof profile.counts !== "object" || Array.isArray(profile.counts)) {
     return emptyProfile()
   }
@@ -61,18 +64,14 @@ function enqueue(job) {
   return result
 }
 
-function recordMany(storage, keys) {
+function recordMany(keys) {
   const acceptedKeys = [...new Set(keys)].filter((key) => allowedKeys.has(key))
   if (!acceptedKeys.length) return Promise.resolve()
-  return enqueue(async () => {
-    const profile = await readProfile(storage)
-    for (const key of acceptedKeys) profile.counts[key] = Math.min(999, (profile.counts[key] ?? 0) + 1)
-    await storage.set(storageKey, profile)
-  })
+  return incrementHabitCounts(acceptedKeys)
 }
 
-function record(storage, key) {
-  return recordMany(storage, [key])
+function record(key) {
+  return recordMany([key])
 }
 
 function requestCategories(event) {
@@ -150,6 +149,10 @@ function buildProjectCheckpoint(objective, nextStep) {
   return `Objetivo: ${cleanObjective}. Siguiente paso: ${cleanNextStep}.`.slice(0, checkpointMaxLength)
 }
 
+function checkpointContext(sessionID) {
+  return `session-${createHash("sha256").update(sessionID).digest("hex")}`
+}
+
 async function projectCheckpointKey(ctx, sessionID) {
   if (typeof sessionID !== "string" || !sessionID.trim()) return undefined
   try {
@@ -157,7 +160,15 @@ async function projectCheckpointKey(ctx, sessionID) {
     const projectID = typeof session?.projectID === "string" ? session.projectID.trim() : ""
     if (!projectID || projectID.toLowerCase() === "global") return undefined
     const digest = createHash("sha256").update(projectID).digest("hex")
-    return `${checkpointKeyPrefix}${digest}`
+    if (!migratedProjects.has(digest)) {
+      try {
+        const legacyCheckpoint = await ctx.storage.get(`${checkpointKeyPrefix}${digest}`)
+        await importLegacy(undefined, legacyCheckpoint ? { ...legacyCheckpoint, project: digest } : undefined)
+      } catch {} finally {
+        migratedProjects.add(digest)
+      }
+    }
+    return { project: digest, context: checkpointContext(sessionID) }
   } catch {
     return undefined
   }
@@ -169,17 +180,13 @@ async function projectCheckpointContext(ctx, event) {
   const intent = promptIntents.get(sessionID) ?? "unclear"
   promptIntents.delete(sessionID)
   if (checkpointNotices.has(sessionID)) return
-  const key = await projectCheckpointKey(ctx, sessionID)
-  if (!key) return
-  let checkpoint
-  try {
-    checkpoint = await ctx.storage.get(key)
-  } catch {
-    return
-  }
+  const scope = await projectCheckpointKey(ctx, sessionID)
+  if (!scope) return
+  const checkpoint = (await listCheckpoints(scope.project, scope.context)).at(0)
+    ?? (await listCheckpoints(scope.project, "legacy")).at(0)
   if (checkpointNotices.size >= 1024) checkpointNotices.delete(checkpointNotices.values().next().value)
   checkpointNotices.add(sessionID)
-  if (checkpoint?.version !== 1 || typeof checkpoint.summary !== "string" || checkpoint.summary.length > checkpointMaxLength) return
+  if (!checkpoint) return
   const guidance = intent === "continue"
     ? "La petición actual pide continuar: úsalo solo como pista y verifica el estado real del repositorio antes de actuar."
     : intent === "new"
@@ -191,20 +198,21 @@ async function projectCheckpointContext(ctx, event) {
   }
 }
 
-async function clearProfile(storage) {
-  return enqueue(() => storage.remove(storageKey))
+async function clearProfile() {
+  return enqueue(() => saveHabitCounts({}))
 }
 
 export default {
   id: "global-habit-memory",
   async setup(ctx) {
+    try { await importLegacy(await ctx.storage.get(storageKey)) } catch {}
     await ctx.tool.hook("execute.after", async (event) => {
       if (event.status !== "completed" || !toolNames.has(event.tool)) return
-      await record(ctx.storage, `tool:${event.tool}`).catch(() => {})
+      await record(`tool:${event.tool}`).catch(() => {})
     })
     await ctx.shell.hook("create.before", async (event) => {
       const command = typeof event.command === "string" ? event.command.match(cliPattern)?.[1] : undefined
-      if (command) await record(ctx.storage, `cli:${command}`).catch(() => {})
+      if (command) await record(`cli:${command}`).catch(() => {})
     })
     await ctx.session.hook("prompt", async (event) => {
       if (typeof event.sessionID === "string") promptIntents.set(event.sessionID, checkpointIntent(event.prompt?.text))
@@ -217,7 +225,7 @@ export default {
         seenPromptIDs.add(messageID)
       }
       try {
-        await recordMany(ctx.storage, categories)
+        await recordMany(categories)
       } catch {
         if (messageID) seenPromptIDs.delete(messageID)
       }
@@ -225,7 +233,7 @@ export default {
     await ctx.session.hook("context", async (event) => {
       try {
         await writes
-        const profile = await readProfile(ctx.storage)
+        const profile = await readProfile()
         event.system.push({
           type: "text",
           text: [
@@ -239,10 +247,27 @@ export default {
     })
     await ctx.command.transform((editor) => {
       editor.add({
+        name: "habit-memory-ui",
+        description: "Inicia la WebUI local de Habit Memory y muestra su URL.",
+        execute: async ({ sessionID }) => {
+          const server = startUiServer()
+          await new Promise((resolve, reject) => {
+            if (server.listening) return resolve()
+            server.once("listening", resolve)
+            server.once("error", reject)
+          })
+          await ctx.session.synthetic({
+            sessionID,
+            text: `WebUI de Habit Memory: http://127.0.0.1:${server.address().port}`,
+            resume: false,
+          })
+        },
+      })
+      editor.add({
         name: "habit-memory-clear",
         description: "Borra el perfil global agregado. Es una acción explícita del usuario, no una herramienta para el modelo.",
         execute: async ({ sessionID }) => {
-          await clearProfile(ctx.storage)
+          await clearProfile()
           await ctx.session.synthetic({
             sessionID,
             text: "Perfil global de hábitos borrado. El aprendizaje automático seguirá contando usos futuros.",
@@ -254,15 +279,15 @@ export default {
         name: "project-checkpoint-clear",
         description: "Borra solo el checkpoint del proyecto actual; no está disponible como herramienta del modelo.",
         execute: async ({ sessionID }) => {
-          const key = await projectCheckpointKey(ctx, sessionID)
-          if (!key) {
+          const scope = await projectCheckpointKey(ctx, sessionID)
+          if (!scope) {
             await ctx.session.synthetic({ sessionID, text: "No hay identidad confiable del proyecto; no hay checkpoint para borrar.", resume: false })
             return
           }
           const removed = await enqueue(async () => {
-            if (!(await ctx.storage.get(key))) return false
-            await ctx.storage.remove(key)
-            return true
+            const current = (await listCheckpoints(scope.project, scope.context))[0]
+              ?? (await listCheckpoints(scope.project, "legacy"))[0]
+            return current ? deleteCheckpoint(scope.project, current.context, current.id) : false
           })
           await ctx.session.synthetic({
             sessionID,
@@ -287,11 +312,11 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const key = await projectCheckpointKey(ctx, toolContext?.sessionID)
-          if (!key) return { content: "No se guardó el checkpoint: no hay identidad confiable de proyecto para esta sesión." }
+          const scope = await projectCheckpointKey(ctx, toolContext?.sessionID)
+          if (!scope) return { content: "No se guardó el checkpoint: no hay identidad confiable de proyecto para esta sesión." }
           const summary = buildProjectCheckpoint(input.objective, input.next_step)
           if (!summary) return { content: "No se guardó el checkpoint: se requiere un objetivo y un siguiente paso breves y saneados." }
-          await enqueue(() => ctx.storage.set(key, { version: 1, summary }))
+          await enqueue(() => saveCheckpoint(scope.project, scope.context, summary))
           return { content: "Checkpoint breve guardado solo para el proyecto actual." }
         },
       })
@@ -307,7 +332,7 @@ export default {
         async execute(input) {
           if (input.action !== "show") throw new Error("Usa el comando explícito /habit-memory-clear para borrar el perfil.")
           await writes
-          const profile = await readProfile(ctx.storage)
+          const profile = await readProfile()
           return { content: profileSummary(profile.counts) }
         },
       })

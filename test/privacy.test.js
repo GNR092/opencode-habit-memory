@@ -1,17 +1,35 @@
 import assert from "node:assert/strict"
-import test from "node:test"
-import plugin from "../index.js"
+import test, { after, beforeEach } from "node:test"
+import { createHash } from "node:crypto"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+const previousDataHome = process.env.XDG_DATA_HOME
+const testDataHome = await mkdtemp(join(tmpdir(), "habit-memory-privacy-"))
+process.env.XDG_DATA_HOME = testDataHome
+const plugin = (await import("../index.js")).default
+const { getData, saveHabitCounts, storePath } = await import("../src/store.js")
+beforeEach(async () => { await rm(storePath, { force: true }); await rm(`${storePath}.lock`, { force: true }) })
+after(async () => {
+  if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = previousDataHome
+  await rm(testDataHome, { recursive: true, force: true })
+})
 
 test("counts explicit user requests without persisting prompt data or clearing storage", async () => {
+  await saveHabitCounts({})
   const values = new Map()
   const removeCalls = []
   const hooks = new Map()
   const tools = new Map()
   const commands = new Map()
+  const storageReads = []
+  const storageWrites = []
   const ctx = {
     storage: {
-      async get(key) { return structuredClone(values.get(key)) },
-      async set(key, value) { values.set(key, structuredClone(value)) },
+      async get(key) { storageReads.push(key); return structuredClone(values.get(key)) },
+      async set(key, value) { storageWrites.push(key); values.set(key, structuredClone(value)) },
       async remove(key) { removeCalls.push(key); values.delete(key) },
     },
     tool: {
@@ -90,7 +108,7 @@ test("counts explicit user requests without persisting prompt data or clearing s
     prompt: { text: "Revisa esto", agents: [{ name: "private-agent-secret" }] },
   })
 
-  const profile = values.get("profile-v1")
+  const profile = (await getData()).habits
   assert.equal(profile.counts["request:cli:git"], 3)
   assert.equal(profile.counts["request:tool:websearch"], 3)
   assert.equal(profile.counts["request:tool:subagent"], 1)
@@ -103,17 +121,25 @@ test("counts explicit user requests without persisting prompt data or clearing s
     assert.equal(serialized.includes(secret), false)
   }
 
+  await saveHabitCounts({ ...profile.counts, "request:cli:npm": 5 })
   const shown = await tools.get("habit_memory").execute({ action: "show" })
   assert.match(shown.content, /Solicitudes explícitas del usuario/)
   assert.match(shown.content, /solicita comando git \(3\)/)
   assert.match(shown.content, /solicita herramienta websearch \(3\)/)
   assert.match(shown.content, /selecciona agente django-expert \(3\)/)
   assert.match(shown.content, /Acciones de herramientas\/comandos hechas por agentes \(señal débil; no son hábitos del usuario\): herramienta bash \(3\)/)
+  assert.match(shown.content, /solicita comando npm \(5\)/)
+  assert.deepEqual(storageReads, ["profile-v1"])
+  assert.deepEqual(storageWrites, [])
   assert.equal(commands.has("habit-memory-clear"), true)
+  await commands.get("habit-memory-clear").execute({ sessionID: "test-session" })
+  assert.deepEqual((await getData()).habits.counts, {})
+  assert.deepEqual(storageWrites, [])
   assert.deepEqual(removeCalls, [])
 })
 
 test("checkpoint notices are suppressed until the oldest session is evicted", async () => {
+  await saveHabitCounts({})
   const values = new Map()
   const hooks = new Map()
   const tools = new Map()
@@ -161,9 +187,11 @@ test("checkpoint notices are suppressed until the oldest session is evicted", as
 })
 
 test("project checkpoints stay isolated, sanitized, and clear only their project", async () => {
+  await saveHabitCounts({})
   const values = new Map()
   const projectBySession = new Map([
     ["save-a", "project-a-id"],
+    ["save-a-parallel", "project-a-id"],
     ["read-b", "project-b-id"],
     ["save-b", "project-b-id"],
     ["read-b2", "project-b-id"],
@@ -218,11 +246,10 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
     objective: "Implementar panel de métricas desde /home/alice/project con api_key=sk-live-secret-123 client_secret=another-secret y ```js\nconsole.log('no persistir')\n```",
     next_step: "Ejecutar pruebas en /Users/alice/private y password=topsecret-value; password is hunter two words.",
   }, { sessionID: "save-a" })
-  const keyA = [...values.keys()].find((key) => key.startsWith("project-checkpoint:v1:"))
-  assert.match(keyA, /^project-checkpoint:v1:[a-f0-9]{64}$/)
-  assert.equal(keyA.includes("project-a-id"), false)
-  const checkpointA = values.get(keyA)
-  assert.equal(checkpointA.version, 1)
+  const projectA = createHash("sha256").update("project-a-id").digest("hex")
+  const contextA = `session-${createHash("sha256").update("save-a").digest("hex")}`
+  const checkpointA = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === contextA)
+  assert.ok(checkpointA)
   assert.ok(checkpointA.summary.length <= 240)
   assert.match(checkpointA.summary, /Objetivo: Implementar panel de métricas/)
   assert.match(checkpointA.summary, /Siguiente paso: Ejecutar pruebas/)
@@ -230,6 +257,11 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   for (const secret of ["/home/alice", "/Users/alice", "api_key", "sk-live-secret", "client_secret", "another-secret", "password", "topsecret", "hunter", "two words", "console.log", "no persistir"]) {
     assert.equal(checkpointA.summary.includes(secret), false)
   }
+  await save.execute({ objective: "Sesión paralela", next_step: "No sobrescribir" }, { sessionID: "save-a-parallel" })
+  const contextParallel = `session-${createHash("sha256").update("save-a-parallel").digest("hex")}`
+  const checkpointParallel = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === contextParallel)
+  assert.ok(checkpointParallel)
+  assert.notEqual(checkpointParallel.id, checkpointA.id)
 
   const contextFor = async (sessionID) => {
     const event = { sessionID, system: [] }
@@ -245,29 +277,33 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   const bBeforeSave = await contextFor("read-b")
   assert.equal(bBeforeSave.includes(checkpointA.summary), false)
   await save.execute({ objective: "Implementar servicio B", next_step: "Validar pruebas" }, { sessionID: "save-b" })
-  const keyB = [...values.keys()].find((key) => key !== keyA && key.startsWith("project-checkpoint:v1:"))
-  assert.ok(keyB)
-  assert.notEqual(keyA, keyB)
+  const projectB = createHash("sha256").update("project-b-id").digest("hex")
+  const contextB = `session-${createHash("sha256").update("save-b").digest("hex")}`
+  const checkpointB = (await getData()).checkpoints.find((c) => c.project === projectB && c.context === contextB)
+  assert.ok(checkpointB)
+  assert.notEqual(contextA, contextB)
   const bSessionText = await contextFor("read-b2")
-  assert.match(bSessionText, /Implementar servicio B/)
+  assert.doesNotMatch(bSessionText, /Implementar servicio B/)
   assert.equal(bSessionText.includes(checkpointA.summary), false)
 
   const newRequest = "Inicia una tarea nueva: prepara un informe distinto."
   const admittedNewRequest = await promptFor("read-a-new", "new-request", newRequest)
   assert.equal(admittedNewRequest.prompt.text, newRequest)
+  await save.execute({ objective: "Implementar panel de métricas", next_step: "Validar estado" }, { sessionID: "read-a-new" })
   const newSessionText = await contextFor("read-a-new")
-  assert.match(newSessionText, /Implementar panel de métricas/)
-  assert.doesNotMatch(newSessionText, /two words/)
+  assert.match(newSessionText, /Objetivo: Implementar panel de métricas/)
   assert.match(newSessionText, /trabajo nuevo/)
   assert.doesNotMatch(newSessionText, /pregunta cuál de las dos opciones/)
   assert.equal((await contextFor("read-a-new")).includes(checkpointA.summary), false)
 
   await promptFor("read-a-continue", "continue-request", "Continúa desde el checkpoint anterior.")
+  await save.execute({ objective: "Continuar tarea", next_step: "Verificar repo" }, { sessionID: "read-a-continue" })
   const continueText = await contextFor("read-a-continue")
   assert.match(continueText, /verifica el estado real del repositorio/)
   assert.doesNotMatch(continueText, /pregunta cuál de las dos opciones/)
 
   await promptFor("read-a-unclear", "unclear-request", "¿Puedes ayudarme con esto?")
+  await save.execute({ objective: "Trabajo abierto", next_step: "Preguntar alcance" }, { sessionID: "read-a-unclear" })
   const unclearText = await contextFor("read-a-unclear")
   assert.match(unclearText, /No está claro si quiere continuar o empezar algo nuevo/)
   assert.equal((await contextFor("read-a-unclear")).includes(checkpointA.summary), false)
@@ -279,11 +315,15 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   await contextFor("global-session")
   assert.equal(reads.filter((key) => key.startsWith("project-checkpoint:v1:")).length, checkpointReadsBeforeMissingIdentity)
 
-  await clear.execute({ sessionID: "clear-a" })
-  assert.equal(values.has(keyA), false)
-  assert.equal(values.has(keyB), true)
-  assert.deepEqual(removals, [keyA])
+  await clear.execute({ sessionID: "save-a" })
+  const dataAfterClear = await getData()
+  assert.equal(dataAfterClear.checkpoints.some((c) => c.id === checkpointA.id), false)
+  assert.equal(dataAfterClear.checkpoints.some((c) => c.id === checkpointB.id), true)
+  assert.equal(dataAfterClear.checkpoints.some((c) => c.id === checkpointParallel.id), true)
+  assert.deepEqual(removals, [])
+  assert.deepEqual(writes, [])
+  assert.deepEqual(reads, ["profile-v1", "project-checkpoint:v1:" + projectA, "project-checkpoint:v1:" + projectB])
   await clear.execute({ sessionID: "global-session" })
-  assert.deepEqual(removals, [keyA])
+  assert.deepEqual(removals, [])
   assert.match(syntheticCalls.at(-1).text, /no hay checkpoint para borrar/i)
 })

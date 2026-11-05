@@ -2,5 +2,9 @@
   "name": "opencode-global-habit-profile",
   "private": true,
   "type": "module",
-  "main": "index.js"
+  "main": "index.js",
+  "exports": "./index.js",
+  "bin": { "habit-memory-mcp": "src/mcp.js" },
+  "scripts": { "mcp": "node src/mcp.js", "ui": "node src/ui-server.js" },
+  "engines": { "node": ">=20" }
 }
