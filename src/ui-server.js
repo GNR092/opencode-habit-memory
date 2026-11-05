@@ -1,8 +1,13 @@
-import { randomBytes } from "node:crypto"
+import { randomBytes, timingSafeEqual } from "node:crypto"
+import { lstatSync } from "node:fs"
+import { mkdir, readFile, writeFile, lstat, unlink, rename, rmdir } from "node:fs/promises"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import { createServer } from "node:http"
 import { clearCheckpoints, deleteCheckpoint, getData, updateCheckpoint } from "./store.js"
 
 const maxBody = 8192
+const controlPath = "/__habit_memory_control"
 const page = (token) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Memory / local index</title><style>
 :root{color-scheme:light dark;--paper:#f1f0e9;--surface:#f8f7f1;--ink:#222821;--muted:#586258;--line:#c9cec3;--accent:#315f4d;--danger:#8b3936;--focus:#a35e20;font:16px/1.5 ui-serif,Georgia,serif}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink)}header{padding:2rem max(1.2rem,calc((100vw - 920px)/2));border-bottom:1px solid var(--line)}header p{margin:.25rem 0;color:var(--muted);font: .85rem/1.4 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,3.4rem);line-height:1.05;letter-spacing:-.04em;margin:.6rem 0}main{max-width:920px;margin:0 auto;padding:2rem 1.2rem 5rem}.intro{display:flex;justify-content:space-between;align-items:end;gap:1rem;margin-bottom:2.5rem}.intro p{max-width:34rem;color:var(--muted);margin:0}.count{font: .8rem ui-monospace,monospace;color:var(--accent);white-space:nowrap}h2{font-size:1.35rem;margin:0 0 1rem}section{margin:2.5rem 0}.habit-list{display:flex;flex-wrap:wrap;gap:.55rem}.habit{border:1px solid var(--line);padding:.45rem .7rem;background:var(--surface);font: .82rem ui-monospace,monospace}.habit b{color:var(--accent);margin-left:.35rem}.scope{border-top:1px solid var(--line);padding:1rem 0 1.5rem}.scope-head{display:flex;justify-content:space-between;align-items:start;gap:1rem;margin-bottom:.7rem}.scope-name{font: .78rem/1.5 ui-monospace,monospace;color:var(--muted);overflow-wrap:anywhere}.entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.8rem;padding:.8rem 0;border-top:1px solid color-mix(in srgb,var(--line) 65%,transparent)}.entry p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.meta{font:.72rem ui-monospace,monospace;color:var(--muted);margin-top:.4rem}button{font:600 .8rem ui-monospace,monospace;color:var(--ink);background:transparent;border:1px solid var(--line);padding:.45rem .65rem;cursor:pointer}button:hover{border-color:var(--accent);color:var(--accent)}button:focus-visible,textarea:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.danger{color:var(--danger)}.actions{display:flex;gap:.4rem;align-items:start}textarea{display:block;width:100%;min-height:6rem;margin:.5rem 0;padding:.65rem;background:var(--surface);color:var(--ink);border:1px solid var(--line);font:inherit}.state{padding:1.2rem;border:1px dashed var(--line);color:var(--muted)}.error{border-color:var(--danger);color:var(--danger)}[hidden]{display:none!important}@media(max-width:600px){header{padding:1.5rem 1.2rem}.intro{align-items:start;flex-direction:column}.scope-head{flex-direction:column}.entry{grid-template-columns:1fr}.actions{flex-wrap:wrap}}
 @media(prefers-color-scheme:dark){:root{--paper:#202620;--surface:#262e27;--ink:#e5e9df;--muted:#b3bcae;--line:#414d42;--accent:#9bc4a5;--danger:#e0a09a;--focus:#e7b26c}}
@@ -21,6 +26,15 @@ export function createUiServer({ port = 0 } = {}) {
     const host = req.headers.host
     if (![ `127.0.0.1:${server.address()?.port}`, `localhost:${server.address()?.port}` ].includes(host)) { res.writeHead(403).end("Forbidden"); return }
     const method = req.method || "GET", url = new URL(req.url || "/", `http://${host}`)
+    if (url.pathname === controlPath) {
+      const supplied = req.headers["x-habit-token"]
+      const authorized = ["GET", "POST"].includes(method) && req.headers.origin === `http://${host}` && typeof supplied === "string" && Buffer.byteLength(supplied) === Buffer.byteLength(token) && timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
+      if (!authorized) { res.writeHead(403).end(); return }
+      if (method === "GET") { res.writeHead(200, { "cache-control": "no-store" }).end("active"); return }
+      res.writeHead(200, { "cache-control": "no-store" }).end("stopping")
+      setImmediate(() => server.close())
+      return
+    }
     const send = (status, payload, type = "application/json; charset=utf-8") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", "referrer-policy": "no-referrer" }); res.end(payload) }
     if (method === "GET" && url.pathname === "/") { send(200, page(token), "text/html; charset=utf-8"); return }
     if (method === "GET" && url.pathname === "/api/data") {
@@ -44,18 +58,132 @@ export function createUiServer({ port = 0 } = {}) {
     } catch { send(400, JSON.stringify({ error: "Invalid request" })) }
   })
   server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
+  server.habitToken = token
   return server.listen(port, "127.0.0.1")
 }
 
 let uiServer
 
+const ipcFiles = () => {
+  const base = process.env.XDG_RUNTIME_DIR && isSafeRuntimeDir(process.env.XDG_RUNTIME_DIR)
+    ? join(process.env.XDG_RUNTIME_DIR, "habit-memory")
+    : join(homedir(), ".local", "share", "habit-memory")
+  const dir = base
+  return { dir, descriptor: join(dir, "ui-control.json"), token: join(dir, "ui-control.token"), lock: join(dir, "ui-control.lock") }
+}
+
+function isSafeRuntimeDir(path) {
+  try {
+    const stat = lstatSync(path)
+    return stat.isDirectory() && stat.uid === process.getuid?.() && !(stat.mode & 0o077)
+  } catch { return false }
+}
+
+async function withLock(paths, fn) {
+  const deadline = Date.now() + 3000
+  while (true) {
+    try { await mkdir(paths.lock, { mode: 0o700 }); break }
+    catch (error) { if (error.code !== "EEXIST" || Date.now() >= deadline) throw error; await new Promise((resolve) => setTimeout(resolve, 25)) }
+  }
+  try { return await fn() } finally { await rmdir(paths.lock).catch(() => {}) }
+}
+
+async function readDescriptor(paths = ipcFiles()) {
+  const stat = await lstat(paths.descriptor)
+  if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error("Unsafe UI control descriptor")
+  const descriptor = JSON.parse(await readFile(paths.descriptor, "utf8"))
+  const secret = await lstat(paths.token)
+  if (!secret.isFile() || secret.uid !== process.getuid?.() || (secret.mode & 0o077) || descriptor.token !== await readFile(paths.token, "utf8") || !/^[a-f0-9]{64}$/.test(descriptor.token) || !Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535) throw new Error("Invalid UI control descriptor")
+  return { ...descriptor, paths }
+}
+
+function requestRemoteStop(descriptor) {
+  return new Promise((resolve) => {
+    const req = fetch(`http://127.0.0.1:${descriptor.port}${controlPath}`, { method: "POST", headers: { host: `127.0.0.1:${descriptor.port}`, origin: `http://127.0.0.1:${descriptor.port}`, "x-habit-token": descriptor.token }, signal: AbortSignal.timeout(1000) })
+    req.then(async (response) => {
+      if (response.status !== 200 || await response.text() !== "stopping") return resolve(false)
+      const deadline = Date.now() + 1500
+      while (Date.now() < deadline) {
+        try { await fetch(`http://127.0.0.1:${descriptor.port}/`, { signal: AbortSignal.timeout(100) }) }
+        catch { return resolve(true) }
+        await new Promise((done) => setTimeout(done, 25))
+      }
+      resolve(false)
+    }).catch(() => resolve(false))
+  })
+}
+
+async function remoteIsActive(descriptor) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${descriptor.port}${controlPath}`, { headers: { host: `127.0.0.1:${descriptor.port}`, origin: `http://127.0.0.1:${descriptor.port}`, "x-habit-token": descriptor.token }, signal: AbortSignal.timeout(500) })
+    return response.status === 200 && await response.text() === "active"
+  } catch { return false }
+}
+
+async function removeOwned(paths, token, descriptorIdentity) {
+  try {
+    if (await readFile(paths.token, "utf8") !== token) return
+    if (!descriptorIdentity) { await unlink(paths.token); return }
+    const current = await readDescriptor(paths)
+    const stat = await lstat(paths.descriptor)
+    if (current.token !== token || stat.dev !== descriptorIdentity.dev || stat.ino !== descriptorIdentity.ino) return
+    await unlink(paths.descriptor)
+    if (await readFile(paths.token, "utf8") === token) await unlink(paths.token)
+  } catch {}
+}
+
+async function installControl(server) {
+  const paths = ipcFiles()
+  await mkdir(paths.dir, { recursive: true, mode: 0o700 })
+  const dirStat = await lstat(paths.dir)
+  if (!dirStat.isDirectory() || dirStat.uid !== process.getuid?.() || (dirStat.mode & 0o077)) throw new Error("Unsafe Habit Memory control directory")
+  await withLock(paths, async () => {
+    try {
+      const existing = await readDescriptor(paths)
+      if (!await remoteIsActive(existing)) throw new Error("Existing UI control state is ambiguous")
+      server.remotePort = existing.port
+      server.close()
+      return
+    } catch (error) { if (error.code !== "ENOENT") throw error }
+    const token = server.habitToken
+    let identity
+    server.once("close", () => {
+      if (identity) void withLock(paths, () => removeOwned(paths, token, identity)).catch(() => {})
+    })
+    const tempToken = `${paths.token}.${randomBytes(8).toString("hex")}.tmp`, tempDescriptor = `${paths.descriptor}.${randomBytes(8).toString("hex")}.tmp`
+    await writeFile(tempToken, token, { mode: 0o600, flag: "wx" })
+    await rename(tempToken, paths.token)
+    const publish = () => {
+      const descriptor = JSON.stringify({ port: server.address().port, token })
+      return writeFile(tempDescriptor, descriptor, { mode: 0o600, flag: "wx" }).then(() => rename(tempDescriptor, paths.descriptor))
+    }
+    if (!server.listening) throw new Error("UI listener closed before control publication")
+    await publish()
+    identity = await lstat(paths.descriptor)
+  })
+}
+
 export function startUiServer() {
   if (uiServer?.listening) return uiServer
   const server = createUiServer({ port: Number(process.env.HABIT_MEMORY_UI_PORT || 0) })
   uiServer = server
+  server.controlReady = new Promise((resolve, reject) => {
+    server.once("listening", () => installControl(server).then(resolve, (error) => {
+      server.close()
+      reject(error)
+    }))
+    server.once("error", reject)
+  })
   server.once("close", () => { if (uiServer === server) uiServer = undefined })
   server.on("listening", () => process.stdout.write(`Habit Memory UI: http://127.0.0.1:${server.address().port}\n`))
   return server
+}
+
+export async function stopUiServer() {
+  if (!uiServer?.listening) return withLock(ipcFiles(), async () => { const descriptor = await readDescriptor(); if (!await requestRemoteStop(descriptor)) return false; return true }).catch(() => false)
+  const server = uiServer
+  await server.controlReady
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve(true)))
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) startUiServer()

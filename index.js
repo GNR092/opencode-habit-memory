@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { getData, saveHabitCounts, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteCheckpoint, importLegacy } from "./src/store.js"
-import { startUiServer } from "./src/ui-server.js"
+import { startUiServer, stopUiServer } from "./src/ui-server.js"
 
 const storageKey = "profile-v1"
 const checkpointKeyPrefix = "project-checkpoint:v1:"
@@ -256,9 +256,22 @@ export default {
             server.once("listening", resolve)
             server.once("error", reject)
           })
+          await server.controlReady
           await ctx.session.synthetic({
             sessionID,
-            text: `WebUI de Habit Memory: http://127.0.0.1:${server.address().port}`,
+            text: `WebUI de Habit Memory: http://127.0.0.1:${server.remotePort || server.address().port}`,
+            resume: false,
+          })
+        },
+      })
+      editor.add({
+        name: "habit-memory-ui-stop",
+        description: "Detiene la WebUI local de Habit Memory si está iniciada.",
+        execute: async ({ sessionID }) => {
+          const stopped = await stopUiServer()
+          await ctx.session.synthetic({
+            sessionID,
+            text: stopped ? "WebUI de Habit Memory detenida." : "La WebUI de Habit Memory no estaba iniciada.",
             resume: false,
           })
         },
