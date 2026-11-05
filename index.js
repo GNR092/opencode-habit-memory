@@ -132,7 +132,7 @@ function sanitizeCheckpointPart(value) {
     .replace(/```[\s\S]*$/g, " ")
     .replace(/`[^`\n]*`/g, " ")
     .replace(/\bhttps?:\/\/[^\s)]+/gi, " ")
-    .replace(/\b(?:[\w-]+[_-])?(?:api[_ -]?key|token|secret|password|passwd|authorization|access[_ -]?key|private[_ -]?key|credential)\b\s*(?:[:=]|\bis\b)\s*["']?[^\s"'`,;]+["']?/gi, " ")
+    .replace(/\b(?:[\w-]+[_-])?(?:api[_ -]?key|token|secret|password|passwd|authorization|access[_ -]?key|private[_ -]?key|credential)\b\s*(?:[:=]|\bis\b)\s*["']?[\s\S]*/gi, " ")
     .replace(/\bbearer\s+[^\s"'`,;]+/gi, " ")
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/gi, " ")
     .replace(/(^|[\s("'=:])(?:~[\\/]|\/(?:[^/\s"'`<>]+\/)*[^/\s"'`<>]+|[A-Za-z]:\\(?:[^\\\s/:*?"<>|]+\\)*[^\\\s/:*?"<>|]*)/g, "$1 ")

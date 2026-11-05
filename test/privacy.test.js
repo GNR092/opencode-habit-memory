@@ -169,7 +169,7 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
 
   await save.execute({
     objective: "Implementar panel de métricas desde /home/alice/project con api_key=sk-live-secret-123 client_secret=another-secret y ```js\nconsole.log('no persistir')\n```",
-    next_step: "Ejecutar pruebas en /Users/alice/private y password=topsecret-value",
+    next_step: "Ejecutar pruebas en /Users/alice/private y password=topsecret-value; password is hunter two words.",
   }, { sessionID: "save-a" })
   const keyA = [...values.keys()].find((key) => key.startsWith("project-checkpoint:v1:"))
   assert.match(keyA, /^project-checkpoint:v1:[a-f0-9]{64}$/)
@@ -180,7 +180,7 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   assert.match(checkpointA.summary, /Objetivo: Implementar panel de métricas/)
   assert.match(checkpointA.summary, /Siguiente paso: Ejecutar pruebas/)
   assert.equal(JSON.stringify(checkpointA).includes("project-a-id"), false)
-  for (const secret of ["/home/alice", "/Users/alice", "api_key", "sk-live-secret", "client_secret", "another-secret", "password", "topsecret", "console.log", "no persistir"]) {
+  for (const secret of ["/home/alice", "/Users/alice", "api_key", "sk-live-secret", "client_secret", "another-secret", "password", "topsecret", "hunter", "two words", "console.log", "no persistir"]) {
     assert.equal(checkpointA.summary.includes(secret), false)
   }
 
@@ -210,6 +210,7 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   assert.equal(admittedNewRequest.prompt.text, newRequest)
   const newSessionText = await contextFor("read-a-new")
   assert.match(newSessionText, /Implementar panel de métricas/)
+  assert.doesNotMatch(newSessionText, /two words/)
   assert.match(newSessionText, /trabajo nuevo/)
   assert.doesNotMatch(newSessionText, /pregunta cuál de las dos opciones/)
   assert.equal((await contextFor("read-a-new")).includes(checkpointA.summary), false)
