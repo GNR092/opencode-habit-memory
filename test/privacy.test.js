@@ -113,6 +113,53 @@ test("counts explicit user requests without persisting prompt data or clearing s
   assert.deepEqual(removeCalls, [])
 })
 
+test("checkpoint notices are suppressed until the oldest session is evicted", async () => {
+  const values = new Map()
+  const hooks = new Map()
+  const tools = new Map()
+  const marker = "FIFO notice marker"
+  const ctx = {
+    storage: {
+      async get(key) { return structuredClone(values.get(key)) },
+      async set(key, value) { values.set(key, structuredClone(value)) },
+    },
+    tool: {
+      async hook(name, callback) { hooks.set(`tool:${name}`, callback) },
+      async transform(callback) { callback({ add(definition) { tools.set(definition.name, definition) } }) },
+    },
+    shell: { async hook() {} },
+    session: {
+      async hook(name, callback) { hooks.set(`session:${name}`, callback) },
+      async get() { return { projectID: "checkpoint-notice-fifo-test" } },
+      async synthetic() {},
+    },
+    command: {
+      async transform(callback) { callback({ add() {} }) },
+      async reload() {},
+    },
+  }
+
+  await plugin.setup(ctx)
+  await tools.get("project_checkpoint_save").execute(
+    { objective: marker, next_step: "Verify retention" },
+    { sessionID: "checkpoint-notice-oldest" },
+  )
+  const contextFor = async (sessionID) => {
+    const event = { sessionID, system: [] }
+    await hooks.get("session:context")(event)
+    return event.system.some((part) => part.text.includes(marker))
+  }
+
+  assert.equal(await contextFor("checkpoint-notice-oldest"), true)
+  assert.equal(await contextFor("checkpoint-notice-oldest"), false)
+  for (let index = 0; index < 1023; index++) {
+    await contextFor(`checkpoint-notice-${index}`)
+  }
+  assert.equal(await contextFor("checkpoint-notice-oldest"), false)
+  await contextFor("checkpoint-notice-overflow")
+  assert.equal(await contextFor("checkpoint-notice-oldest"), true)
+})
+
 test("project checkpoints stay isolated, sanitized, and clear only their project", async () => {
   const values = new Map()
   const projectBySession = new Map([

@@ -177,6 +177,7 @@ async function projectCheckpointContext(ctx, event) {
   } catch {
     return
   }
+  if (checkpointNotices.size >= 1024) checkpointNotices.delete(checkpointNotices.values().next().value)
   checkpointNotices.add(sessionID)
   if (checkpoint?.version !== 1 || typeof checkpoint.summary !== "string" || checkpoint.summary.length > checkpointMaxLength) return
   const guidance = intent === "continue"
