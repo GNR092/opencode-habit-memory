@@ -257,9 +257,10 @@ export default {
             server.once("error", reject)
           })
           await server.controlReady
+          const port = server.remotePort || server.address().port
           await ctx.session.synthetic({
             sessionID,
-            text: `WebUI de Habit Memory: http://127.0.0.1:${server.remotePort || server.address().port}`,
+            text: `WebUI de Habit Memory: http://127.0.0.1:${port} (Puerto: ${port})`,
             resume: false,
           })
         },

@@ -2,24 +2,14 @@ import { randomBytes, timingSafeEqual } from "node:crypto"
 import { lstatSync } from "node:fs"
 import { mkdir, readFile, writeFile, lstat, unlink, rename, rmdir } from "node:fs/promises"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
-import { createServer } from "node:http"
+import { createServer, request as httpRequest } from "node:http"
 import { clearCheckpoints, deleteCheckpoint, getData, updateCheckpoint } from "./store.js"
 
 const maxBody = 8192
+const distPath = join(fileURLToPath(new URL("../dist/", import.meta.url)))
 const controlPath = "/__habit_memory_control"
-const page = (token) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Memory / local index</title><style>
-:root{color-scheme:light dark;--paper:#f1f0e9;--surface:#f8f7f1;--ink:#222821;--muted:#586258;--line:#c9cec3;--accent:#315f4d;--danger:#8b3936;--focus:#a35e20;font:16px/1.5 ui-serif,Georgia,serif}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink)}header{padding:2rem max(1.2rem,calc((100vw - 920px)/2));border-bottom:1px solid var(--line)}header p{margin:.25rem 0;color:var(--muted);font: .85rem/1.4 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}h1{font-size:clamp(2rem,6vw,3.4rem);line-height:1.05;letter-spacing:-.04em;margin:.6rem 0}main{max-width:920px;margin:0 auto;padding:2rem 1.2rem 5rem}.intro{display:flex;justify-content:space-between;align-items:end;gap:1rem;margin-bottom:2.5rem}.intro p{max-width:34rem;color:var(--muted);margin:0}.count{font: .8rem ui-monospace,monospace;color:var(--accent);white-space:nowrap}h2{font-size:1.35rem;margin:0 0 1rem}section{margin:2.5rem 0}.habit-list{display:flex;flex-wrap:wrap;gap:.55rem}.habit{border:1px solid var(--line);padding:.45rem .7rem;background:var(--surface);font: .82rem ui-monospace,monospace}.habit b{color:var(--accent);margin-left:.35rem}.scope{border-top:1px solid var(--line);padding:1rem 0 1.5rem}.scope-head{display:flex;justify-content:space-between;align-items:start;gap:1rem;margin-bottom:.7rem}.scope-name{font: .78rem/1.5 ui-monospace,monospace;color:var(--muted);overflow-wrap:anywhere}.entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.8rem;padding:.8rem 0;border-top:1px solid color-mix(in srgb,var(--line) 65%,transparent)}.entry p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.meta{font:.72rem ui-monospace,monospace;color:var(--muted);margin-top:.4rem}button{font:600 .8rem ui-monospace,monospace;color:var(--ink);background:transparent;border:1px solid var(--line);padding:.45rem .65rem;cursor:pointer}button:hover{border-color:var(--accent);color:var(--accent)}button:focus-visible,textarea:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.danger{color:var(--danger)}.actions{display:flex;gap:.4rem;align-items:start}textarea{display:block;width:100%;min-height:6rem;margin:.5rem 0;padding:.65rem;background:var(--surface);color:var(--ink);border:1px solid var(--line);font:inherit}.state{padding:1.2rem;border:1px dashed var(--line);color:var(--muted)}.error{border-color:var(--danger);color:var(--danger)}[hidden]{display:none!important}@media(max-width:600px){header{padding:1.5rem 1.2rem}.intro{align-items:start;flex-direction:column}.scope-head{flex-direction:column}.entry{grid-template-columns:1fr}.actions{flex-wrap:wrap}}
-@media(prefers-color-scheme:dark){:root{--paper:#202620;--surface:#262e27;--ink:#e5e9df;--muted:#b3bcae;--line:#414d42;--accent:#9bc4a5;--danger:#e0a09a;--focus:#e7b26c}}
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
-</style></head><body><header><label for="language">Language / Idioma</label> <select id="language" aria-label="Language / Idioma"><option value="en">English</option><option value="es">Español</option></select><p>HABIT MEMORY · LOCAL ONLY</p><h1 data-i18n="title">Your working memory.</h1><p data-i18n="subtitle">Stored habits and checkpoints, on this machine.</p></header><main><div class="intro"><p data-i18n="intro">This index contains only summaries and aggregate habits saved by the plugin. It does not read OpenCode history or other plugin data.</p><span class="count" id="total">Loading…</span></div><div id="state" class="state" role="status" aria-live="polite">Reading local memory…</div><div id="content" hidden><section aria-labelledby="habits-title"><h2 id="habits-title" data-i18n="patterns">Patterns observed</h2><div id="habits" class="habit-list"></div></section><section aria-labelledby="checkpoints-title"><h2 id="checkpoints-title" data-i18n="checkpoints">Saved checkpoints</h2><div id="checkpoints"></div></section></div></main><script>
-const token=${JSON.stringify(token)},state=document.querySelector('#state'),content=document.querySelector('#content');let lang=/^es(?:-|$)/i.test(navigator.language)?'es':'en',currentData=null;const words={en:{title:'Your working memory.',subtitle:'Stored habits and checkpoints, on this machine.',intro:'This index contains only summaries and aggregate habits saved by the plugin. It does not read OpenCode history or other plugin data.',patterns:'Patterns observed',checkpoints:'Saved checkpoints',loading:'Reading local memory…',total:(p,c)=>p+' patterns · '+c+' checkpoints',emptyPatterns:'No patterns recorded yet. They appear as the plugin observes your work.',emptyCheckpoints:'No checkpoints saved. Create one from OpenCode when you want to preserve a useful stopping point.',scope:'Delete this scope',deleteAll:n=>'Delete all '+n+' checkpoints in this scope?',edit:'Edit',delete:'Delete',cancel:'Cancel',save:'Save',summary:'Checkpoint summary',range:'Enter 1–240 characters.',deleteOne:'Delete this checkpoint?',error:' Reload the page to try again.',request:n=>'The local server rejected the request ('+n+').' },es:{title:'Tu memoria de trabajo.',subtitle:'Hábitos y puntos guardados en este equipo.',intro:'Este índice contiene solo resúmenes y hábitos agregados guardados por el complemento. No lee el historial de OpenCode ni otros datos del complemento.',patterns:'Patrones observados',checkpoints:'Puntos guardados',loading:'Leyendo la memoria local…',total:(p,c)=>p+' patrones · '+c+' puntos',emptyPatterns:'Aún no hay patrones registrados. Aparecerán mientras el complemento observa tu trabajo.',emptyCheckpoints:'No hay puntos guardados. Crea uno desde OpenCode para conservar un punto útil.',scope:'Eliminar este ámbito',deleteAll:n=>'¿Eliminar los '+n+' puntos de este ámbito?',edit:'Editar',delete:'Eliminar',cancel:'Cancelar',save:'Guardar',summary:'Resumen del punto guardado',range:'Escribe entre 1 y 240 caracteres.',deleteOne:'¿Eliminar este punto guardado?',error:' Recarga la página para intentarlo de nuevo.',request:n=>'El servidor local rechazó la solicitud ('+n+').' }};const t=(key,...args)=>typeof words[lang][key]==='function'?words[lang][key](...args):words[lang][key];function setLanguage(value){lang=value;document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(n=>n.textContent=t(n.dataset.i18n));if(currentData)render(currentData)}document.querySelector('#language').value=lang;document.querySelector('#language').onchange=e=>setLanguage(e.target.value);
-const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n};
-async function request(url,body){const r=await fetch(url,{method:body?'POST':'GET',headers:body?{'content-type':'application/json','x-habit-token':token}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});if(!r.ok)throw Error(t('request',r.status));return body?null:r.json()}
-function render(data){currentData=data;const active=document.querySelector('textarea'),draft=active?{id:active.dataset.checkpoint,value:active.value}:null;const habits=document.querySelector('#habits'),list=document.querySelector('#checkpoints');habits.replaceChildren();list.replaceChildren();const pairs=Object.entries(data.habits.counts);for(const [name,count] of pairs){const item=el('span','habit');item.append(document.createTextNode(name),el('b','',String(count)));habits.append(item)}if(!pairs.length)habits.append(el('p','state',t('emptyPatterns')));document.querySelector('#total').textContent=t('total',pairs.length,data.checkpoints.length);if(!data.checkpoints.length)list.append(el('p','state',t('emptyCheckpoints')));const groups=new Map();for(const c of data.checkpoints){const key=c.project+' / '+c.context;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(c)}for(const [scope,items] of groups){const section=el('article','scope'),head=el('div','scope-head'),name=el('span','scope-name',scope),clear=el('button','danger',t('scope'));clear.setAttribute('aria-label',lang==='es'?'Eliminar todos los puntos guardados en '+scope:'Delete all checkpoints in '+scope);clear.onclick=async()=>{if(!confirm(t('deleteAll',items.length)))return;try{await request('/api/scope/delete',{project:items[0].project,context:items[0].context});await load()}catch(e){fail(e.message)}};head.append(name,clear);section.append(head);for(const c of items){const row=el('div','entry'),main=el('div'),summary=el('p','',c.summary),meta=el('div','meta',new Date(c.createdAt).toLocaleString());main.append(summary,meta);const actions=el('div','actions'),edit=el('button','',t('edit')),remove=el('button','danger',t('delete'));edit.setAttribute('aria-label',(lang==='es'?'Editar punto guardado ':'Edit checkpoint saved ')+new Date(c.createdAt).toLocaleString());remove.setAttribute('aria-label',(lang==='es'?'Eliminar punto guardado ':'Delete checkpoint saved ')+new Date(c.createdAt).toLocaleString());edit.onclick=()=>{const field=el('textarea');field.dataset.checkpoint=c.id;field.value=c.summary;field.maxLength=240;field.setAttribute('aria-label',t('summary'));const save=el('button','',t('save')),cancel=el('button','',t('cancel'));main.replaceChildren(field);actions.replaceChildren(save,cancel);cancel.onclick=()=>load();save.onclick=async()=>{if(!field.value.trim()||field.value.length>240){field.setCustomValidity(t('range'));field.reportValidity();return}try{await request('/api/checkpoint/edit',{project:c.project,context:c.context,id:c.id,summary:field.value});await load()}catch(e){fail(e.message)}};field.focus()};if(draft&&draft.id===c.id)edit.click();if(draft&&draft.id===c.id)document.querySelector('textarea').value=draft.value;remove.onclick=async()=>{if(!confirm(t('deleteOne')))return;try{await request('/api/checkpoint/delete',{project:c.project,context:c.context,id:c.id});await load()}catch(e){fail(e.message)}};actions.append(edit,remove);row.append(main,actions);section.append(row)}list.append(section)}}
-function fail(message){content.hidden=true;state.hidden=false;state.className='state error';state.textContent=message+t('error')}async function load(){state.hidden=false;state.className='state';state.textContent=t('loading');content.hidden=true;try{const data=await request('/api/data');render(data);state.hidden=true;content.hidden=false}catch(e){fail(e.message)}}load();
-</script></body></html>`
-
 export function createUiServer({ port = 0 } = {}) {
   const token = randomBytes(32).toString("hex")
   const server = createServer(async (req, res) => {
@@ -35,8 +25,18 @@ export function createUiServer({ port = 0 } = {}) {
       setImmediate(() => server.close())
       return
     }
-    const send = (status, payload, type = "application/json; charset=utf-8") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", "referrer-policy": "no-referrer" }); res.end(payload) }
-    if (method === "GET" && url.pathname === "/") { send(200, page(token), "text/html; charset=utf-8"); return }
+    const send = (status, payload, type = "application/json; charset=utf-8") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", "referrer-policy": "no-referrer" }); res.end(payload) }
+    if (method === "GET" && url.pathname === "/") {
+      try { const html = (await readFile(join(distPath, "index.html"), "utf8")).replace("<head>", `<head><meta name="habit-token" content="${token}">`); send(200, html, "text/html; charset=utf-8") }
+      catch { send(503, "UI assets are not built", "text/plain; charset=utf-8") }
+      return
+    }
+    const asset = /^\/assets\/(index-[a-zA-Z0-9_-]+\.(?:js|css))$/.exec(url.pathname)
+    if (method === "GET" && asset) {
+      try { const file = asset[1], type = file.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8"; send(200, await readFile(join(distPath, "assets", file)), type) }
+      catch { send(404, "Not found", "text/plain; charset=utf-8") }
+      return
+    }
     if (method === "GET" && url.pathname === "/api/data") {
       try { const data = await getData(); send(200, JSON.stringify({ habits: data.habits, checkpoints: data.checkpoints })) }
       catch { send(500, JSON.stringify({ error: "Unable to read local memory" })) }
@@ -91,33 +91,71 @@ async function withLock(paths, fn) {
 async function readDescriptor(paths = ipcFiles()) {
   const stat = await lstat(paths.descriptor)
   if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error("Unsafe UI control descriptor")
-  const descriptor = JSON.parse(await readFile(paths.descriptor, "utf8"))
+  const raw = await readFile(paths.descriptor, "utf8")
+  const descriptor = JSON.parse(raw)
   const secret = await lstat(paths.token)
   if (!secret.isFile() || secret.uid !== process.getuid?.() || (secret.mode & 0o077) || descriptor.token !== await readFile(paths.token, "utf8") || !/^[a-f0-9]{64}$/.test(descriptor.token) || !Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535) throw new Error("Invalid UI control descriptor")
-  return { ...descriptor, paths }
+  return { ...descriptor, paths, identity: { descriptor: { dev: stat.dev, ino: stat.ino, raw }, token: { dev: secret.dev, ino: secret.ino } } }
 }
 
-function requestRemoteStop(descriptor) {
-  return new Promise((resolve) => {
-    const req = fetch(`http://127.0.0.1:${descriptor.port}${controlPath}`, { method: "POST", headers: { host: `127.0.0.1:${descriptor.port}`, origin: `http://127.0.0.1:${descriptor.port}`, "x-habit-token": descriptor.token }, signal: AbortSignal.timeout(1000) })
-    req.then(async (response) => {
-      if (response.status !== 200 || await response.text() !== "stopping") return resolve(false)
-      const deadline = Date.now() + 1500
-      while (Date.now() < deadline) {
-        try { await fetch(`http://127.0.0.1:${descriptor.port}/`, { signal: AbortSignal.timeout(100) }) }
-        catch { return resolve(true) }
-        await new Promise((done) => setTimeout(done, 25))
-      }
-      resolve(false)
-    }).catch(() => resolve(false))
+function controlRequest(descriptor, { method = "GET", path = controlPath, timeout = 500, bodyLimit = 64 } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: "127.0.0.1", port: descriptor.port, path, method, headers: { host: `127.0.0.1:${descriptor.port}`, origin: `http://127.0.0.1:${descriptor.port}`, ...(path === controlPath ? { "x-habit-token": descriptor.token } : {}) } }, (res) => {
+      const chunks = []
+      let size = 0
+      res.on("data", (chunk) => {
+        size += chunk.length
+        if (size > bodyLimit) { req.destroy(new Error("Control response too large")); return }
+        chunks.push(chunk)
+      })
+      res.once("end", () => { clearTimeout(timer); resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }) })
+      res.once("aborted", () => { clearTimeout(timer); reject(Object.assign(new Error("Control response aborted"), { code: "ECONNRESET" })) })
+      res.once("error", (error) => { clearTimeout(timer); reject(error) })
+    })
+    const timer = setTimeout(() => req.destroy(Object.assign(new Error("Control request timed out"), { code: "ETIMEDOUT" })), timeout)
+    req.once("error", (error) => { clearTimeout(timer); reject(error) })
+    req.end()
   })
 }
 
-async function remoteIsActive(descriptor) {
+async function requestRemoteStop(descriptor) {
   try {
-    const response = await fetch(`http://127.0.0.1:${descriptor.port}${controlPath}`, { headers: { host: `127.0.0.1:${descriptor.port}`, origin: `http://127.0.0.1:${descriptor.port}`, "x-habit-token": descriptor.token }, signal: AbortSignal.timeout(500) })
-    return response.status === 200 && await response.text() === "active"
+    const response = await controlRequest(descriptor, { method: "POST", timeout: 1000 })
+    if (response.status !== 200 || response.body !== "stopping") return false
+    const deadline = Date.now() + 1500
+    while (Date.now() < deadline) {
+      try { await controlRequest(descriptor, { path: "/", timeout: 100, bodyLimit: 0 }) }
+      catch (error) { if (error.code === "ECONNREFUSED") return true }
+      await new Promise((done) => setTimeout(done, 25))
+    }
+    return false
   } catch { return false }
+}
+
+async function remoteIsActive(descriptor) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await controlRequest(descriptor)
+      if (response.status === 200 && response.body === "active") return true
+      throw new Error("Existing UI control endpoint returned an unexpected response")
+    } catch (error) {
+      if (error.code === "ECONNREFUSED") return false
+      if (error.code === "ETIMEDOUT") throw new Error("Existing UI control endpoint timed out")
+      if (error.message.startsWith("Existing UI control endpoint")) throw error
+      if (attempt === 0 && error.code === "ECONNRESET") continue
+      const code = typeof error.code === "string" && /^[A-Z0-9_]{1,40}$/.test(error.code) ? ` (${error.code})` : ""
+      throw new Error(`Existing UI control endpoint could not be verified${code}`)
+    }
+  }
+}
+
+async function removeStale(paths, existing) {
+  const current = await readDescriptor(paths)
+  if (current.identity.descriptor.dev !== existing.identity.descriptor.dev || current.identity.descriptor.ino !== existing.identity.descriptor.ino || current.identity.descriptor.raw !== existing.identity.descriptor.raw || current.identity.token.dev !== existing.identity.token.dev || current.identity.token.ino !== existing.identity.token.ino || current.token !== existing.token) throw new Error("UI control state changed during recovery")
+  await unlink(paths.descriptor)
+  const tokenStat = await lstat(paths.token)
+  if (tokenStat.dev !== existing.identity.token.dev || tokenStat.ino !== existing.identity.token.ino || await readFile(paths.token, "utf8") !== existing.token) throw new Error("UI control token changed during recovery")
+  await unlink(paths.token)
 }
 
 async function removeOwned(paths, token, descriptorIdentity) {
@@ -138,13 +176,18 @@ async function installControl(server) {
   const dirStat = await lstat(paths.dir)
   if (!dirStat.isDirectory() || dirStat.uid !== process.getuid?.() || (dirStat.mode & 0o077)) throw new Error("Unsafe Habit Memory control directory")
   await withLock(paths, async () => {
-    try {
+    let descriptorExists = true
+    try { await lstat(paths.descriptor) }
+    catch (error) { if (error.code === "ENOENT") descriptorExists = false; else throw error }
+    if (descriptorExists) {
       const existing = await readDescriptor(paths)
-      if (!await remoteIsActive(existing)) throw new Error("Existing UI control state is ambiguous")
-      server.remotePort = existing.port
-      server.close()
-      return
-    } catch (error) { if (error.code !== "ENOENT") throw error }
+      if (await remoteIsActive(existing)) {
+        server.remotePort = existing.port
+        server.close()
+        return
+      }
+      await removeStale(paths, existing)
+    }
     const token = server.habitToken
     let identity
     server.once("close", () => {
@@ -165,7 +208,7 @@ async function installControl(server) {
 
 export function startUiServer() {
   if (uiServer?.listening) return uiServer
-  const server = createUiServer({ port: Number(process.env.HABIT_MEMORY_UI_PORT || 0) })
+  const server = createUiServer({ port: Number(process.env.HABIT_MEMORY_UI_PORT || 43109) })
   uiServer = server
   server.controlReady = new Promise((resolve, reject) => {
     server.once("listening", () => installControl(server).then(resolve, (error) => {
