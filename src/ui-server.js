@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
 import { createServer, request as httpRequest } from "node:http"
-import { clearCheckpoints, deleteCheckpoint, getData, updateCheckpoint } from "./store.js"
+import { clearCheckpoints, clearHabits, deleteCheckpoint, getData, updateCheckpoint } from "./store.js"
 
 const maxBody = 8192
 const distPath = join(fileURLToPath(new URL("../dist/", import.meta.url)))
@@ -28,7 +28,7 @@ export function createUiServer({ port = 0 } = {}) {
     const send = (status, payload, type = "application/json; charset=utf-8") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", "referrer-policy": "no-referrer" }); res.end(payload) }
     if (method === "GET" && url.pathname === "/") {
       try { const html = (await readFile(join(distPath, "index.html"), "utf8")).replace("<head>", `<head><meta name="habit-token" content="${token}">`); send(200, html, "text/html; charset=utf-8") }
-      catch { send(503, "UI assets are not built", "text/plain; charset=utf-8") }
+      catch { send(503, "WebUI assets are missing (dist/index.html was not found). Run `npm run build` from the plugin directory to generate `dist/`.", "text/plain; charset=utf-8") }
       return
     }
     const asset = /^\/assets\/(index-[a-zA-Z0-9_-]+\.(?:js|css))$/.exec(url.pathname)
@@ -42,7 +42,7 @@ export function createUiServer({ port = 0 } = {}) {
       catch { send(500, JSON.stringify({ error: "Unable to read local memory" })) }
       return
     }
-    if (method !== "POST" || !["/api/checkpoint/edit", "/api/checkpoint/delete", "/api/scope/delete"].includes(url.pathname)) { send(404, JSON.stringify({ error: "Not found" })); return }
+    if (method !== "POST" || !["/api/checkpoint/edit", "/api/checkpoint/delete", "/api/scope/delete", "/api/habits/clear"].includes(url.pathname)) { send(404, JSON.stringify({ error: "Not found" })); return }
     const origin = req.headers.origin
     if (origin !== `http://${host}` || req.headers["x-habit-token"] !== token) { send(403, JSON.stringify({ error: "Forbidden" })); return }
     let raw = ""
@@ -50,9 +50,15 @@ export function createUiServer({ port = 0 } = {}) {
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) throw new Error()
       for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > maxBody) { send(413, JSON.stringify({ error: "Request too large" })); return } }
       const body = JSON.parse(raw)
-      const editing = url.pathname === "/api/checkpoint/edit", deleting = url.pathname === "/api/checkpoint/delete"
-      const fields = editing ? ["project", "context", "id", "summary"] : deleting ? ["project", "context", "id"] : ["project", "context"]
+      const clearingHabits = url.pathname === "/api/habits/clear", editing = url.pathname === "/api/checkpoint/edit", deleting = url.pathname === "/api/checkpoint/delete"
+      const fields = clearingHabits ? ["confirm"] : editing ? ["project", "context", "id", "summary"] : deleting ? ["project", "context", "id"] : ["project", "context"]
       if (!body || Array.isArray(body) || Object.keys(body).length !== fields.length || Object.keys(body).some((key) => !fields.includes(key))) throw new Error()
+      if (clearingHabits) {
+        if (body.confirm !== true) throw new Error()
+        await clearHabits()
+        send(200, JSON.stringify({ changed: true }))
+        return
+      }
       const changed = editing ? await updateCheckpoint(body.project, body.context, body.id, body.summary) : deleting ? await deleteCheckpoint(body.project, body.context, body.id) : await clearCheckpoints(body.project, body.context)
       send(changed ? 200 : 404, JSON.stringify({ changed }))
     } catch { send(400, JSON.stringify({ error: "Invalid request" })) }

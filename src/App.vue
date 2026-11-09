@@ -1,29 +1,35 @@
 <script>
 import { computed, onMounted, ref, watch } from 'vue'
-import { groupCheckpoints, groupPatterns } from './ui-model.js'
+import { checkpointTitle, dailyTrend, groupCheckpoints, projectDirectoryLabel, reportGroups, trendBars } from './ui-model.js'
 
 export default {
   setup() {
     const data = ref(null)
     const error = ref('')
     const language = ref('es')
+    const theme = ref('dark')
     const busy = ref(false)
     const token = document.querySelector('meta[name="habit-token"]')?.content
     const t = (es, en) => language.value === 'es' ? es : en
     const scopes = computed(() => groupCheckpoints(data.value?.checkpoints ?? []))
-    const patterns = computed(() => groupPatterns(data.value?.habits.counts ?? {}))
-    const patternSections = computed(() => [
-      { key: 'requests', title: t('Solicitudes explícitas', 'Explicit requests'), items: patterns.value.requests },
-      { key: 'activity', title: t('Actividad de agentes · señal débil', 'Agent activity · weak signal'), items: patterns.value.activity },
-      { key: 'other', title: t('Otras categorías', 'Other categories'), items: patterns.value.other },
-    ].filter((section) => section.items.length))
+    const reports = computed(() => reportGroups(data.value?.habits.counts ?? {}))
+    const trend = computed(() => dailyTrend(data.value?.habits.daily ?? {}))
+    const bars = computed(() => trendBars(trend.value))
+    const hasHabitData = computed(() => reports.value.some((group) => group.total > 0) || trend.value.length > 0)
     const kindLabel = (kind) => ({
       tool: t('Herramienta', 'Tool'),
       cli: t('Comando', 'Command'),
-      agent: t('Agente', 'Agent'),
     }[kind] ?? '')
+    const reportTitle = (key) => ({
+      tools: t('Herramientas', 'Tools'),
+      commands: t('Comandos', 'Commands'),
+    }[key] ?? key)
+    const signalLabel = (signal) => signal === 'request'
+      ? t('solicitud explícita', 'explicit request')
+      : t('uso observado', 'observed use')
 
     watch(language, (value) => { document.documentElement.lang = value })
+    watch(theme, (value) => { document.documentElement.dataset.theme = value }, { immediate: true })
 
     async function request(path, body) {
       const response = await fetch(path, {
@@ -68,89 +74,151 @@ export default {
       return mutate('/api/scope/delete', { project: scope.project, context: scope.context }, message)
     }
 
+    function clearHabits() {
+      return mutate('/api/habits/clear', { confirm: true }, t(
+        '¿Borrar los conteos acumulados y tendencias de hábitos? Esta acción no se puede deshacer. Los checkpoints no se borrarán.',
+        'Clear all accumulated habit counts and trends? This cannot be undone. Checkpoints will not be deleted.',
+      ))
+    }
+
     onMounted(load)
-    return { data, error, language, busy, t, scopes, patternSections, kindLabel, load, edit, removeCheckpoint, removeScope }
+    return { data, error, language, theme, busy, t, scopes, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
   },
 }
 </script>
 
 <template>
-  <header class="masthead">
-    <p class="eyebrow">HABIT MEMORY · {{ t('SOLO LOCAL', 'LOCAL ONLY') }}</p>
-    <h1>{{ t('Tu memoria de trabajo.', 'Your working memory.') }}</h1>
-    <p class="intro">{{ t('Hábitos y puntos guardados en este equipo.', 'Stored habits and checkpoints, on this machine.') }}</p>
-    <label class="language">{{ t('Idioma', 'Language') }}
-      <select v-model="language">
-        <option value="es">Español</option>
-        <option value="en">English</option>
-      </select>
-    </label>
-  </header>
+  <div class="app-shell" id="inicio">
+    <aside class="sidebar">
+      <a class="brand" href="#inicio">Habit Memory</a>
+      <nav class="sidebar-nav" :aria-label="t('Navegación principal', 'Main navigation')">
+        <a href="#reports">{{ t('Informes', 'Reports') }}</a>
+        <a href="#checkpoints">{{ t('Puntos guardados', 'Saved checkpoints') }}</a>
+      </nav>
+      <p class="local-note">{{ t('Tus datos permanecen en este equipo.', 'Your data stays on this machine.') }}</p>
+    </aside>
 
-  <main>
-    <p class="intro">{{ t('Este índice contiene solo resúmenes y hábitos agregados guardados por el complemento.', 'This index contains only summaries and aggregate habits saved by the plugin.') }}</p>
-    <p v-if="error" class="notice" role="alert">{{ error }} <button type="button" :disabled="busy" @click="load">{{ t('Reintentar', 'Retry') }}</button></p>
-    <p v-if="busy" role="status">{{ t('Guardando cambios…', 'Saving changes…') }}</p>
-    <p v-if="!data && !error" role="status">{{ t('Leyendo la memoria local…', 'Reading local memory…') }}</p>
-    <template v-if="data">
-      <p class="totals">{{ Object.keys(data.habits.counts).length }} {{ t('patrones', 'patterns') }} · {{ data.checkpoints.length }} {{ t('puntos guardados', 'checkpoints') }}</p>
+    <div class="workspace">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">{{ t('MEMORIA DE TRABAJO', 'WORKING MEMORY') }}</p>
+          <h1>{{ t('Tu memoria de trabajo.', 'Your working memory.') }}</h1>
+          <p class="intro">{{ t('Hábitos y puntos guardados en este equipo.', 'Stored habits and checkpoints, on this machine.') }}</p>
+        </div>
+        <div class="masthead-controls">
+          <label class="language"><span>{{ t('Idioma', 'Language') }}</span>
+            <select v-model="language">
+              <option value="es">ES</option>
+              <option value="en">EN</option>
+            </select>
+          </label>
+          <button class="theme-toggle" type="button" :aria-pressed="theme === 'light'"
+            :aria-label="theme === 'dark' ? t('Cambiar a tema claro', 'Switch to light theme') : t('Cambiar a tema oscuro', 'Switch to dark theme')"
+            @click="theme = theme === 'dark' ? 'light' : 'dark'">
+            {{ theme === 'dark' ? t('Claro', 'Light') : t('Oscuro', 'Dark') }}
+          </button>
+        </div>
+      </header>
 
-      <section aria-labelledby="patterns-heading">
-        <h2 id="patterns-heading">{{ t('Patrones observados', 'Patterns observed') }}</h2>
-        <p class="section-note">{{ t('Conteos agregados; la actividad de agentes es una señal débil.', 'Aggregate counts; agent activity is a weak signal.') }}</p>
-        <p v-if="!patternSections.length">{{ t('Aún no hay patrones registrados.', 'No patterns recorded yet.') }}</p>
-        <div v-else class="pattern-sections">
-          <section v-for="section in patternSections" :key="section.key" class="pattern-section">
-            <h3>{{ section.title }}</h3>
-            <ul class="pattern-list">
-              <li v-for="pattern in section.items" :key="pattern.key" class="habit">
-                <div class="habit-label">
-                  <span>{{ pattern.kind ? `${kindLabel(pattern.kind)} · ${pattern.name}` : pattern.key }}</span>
-                  <code v-if="pattern.kind">{{ pattern.key }}</code>
-                </div>
-                <div class="habit-count"><strong>{{ pattern.count }}</strong> {{ pattern.count === 1 ? t('vez', 'time') : t('veces', 'times') }}</div>
-              </li>
-            </ul>
+      <main>
+        <p class="page-note">{{ t('Este índice contiene solo resúmenes y hábitos agregados guardados por el complemento.', 'This index contains only summaries and aggregate habits saved by the plugin.') }}</p>
+        <p v-if="error" class="notice" role="alert">{{ error }} <button type="button" :disabled="busy" @click="load">{{ t('Reintentar', 'Retry') }}</button></p>
+        <p v-if="busy" role="status">{{ t('Guardando cambios…', 'Saving changes…') }}</p>
+        <p v-if="!data && !error" role="status">{{ t('Leyendo la memoria local…', 'Reading local memory…') }}</p>
+        <template v-if="data">
+          <section class="stat-strip" :aria-label="t('Resumen de la memoria', 'Memory overview')">
+            <article class="stat-card">
+              <span>{{ t('Puntos guardados', 'Saved checkpoints') }}</span>
+              <strong>{{ data.checkpoints.length }}</strong>
+            </article>
           </section>
-        </div>
-      </section>
 
-      <section aria-labelledby="checkpoints-heading">
-        <h2 id="checkpoints-heading">{{ t('Puntos guardados', 'Saved checkpoints') }}</h2>
-        <p v-if="!scopes.length">{{ t('No hay puntos guardados.', 'No checkpoints saved.') }}</p>
-        <div v-else class="scope-list">
-          <article v-for="scope in scopes" :key="scope.key" class="scope">
-            <header class="scope-head">
-              <div class="scope-provenance">
-                <p class="scope-caption">{{ t('Ámbito', 'Scope') }} · {{ scope.items.length }} {{ scope.items.length === 1 ? t('punto', 'checkpoint') : t('puntos', 'checkpoints') }}</p>
-                <dl class="scope-identifiers">
-                  <div><dt>{{ t('Proyecto', 'Project') }}</dt><dd><code>{{ scope.project }}</code></dd></div>
-                  <div><dt>{{ t('Contexto', 'Context') }}</dt><dd><code>{{ scope.context }}</code></dd></div>
-                </dl>
+          <section id="reports" aria-labelledby="reports-heading">
+            <header class="report-heading">
+              <div>
+                <h2 id="reports-heading">{{ t('Informes de actividad', 'Activity reports') }}</h2>
+                <p class="section-note">{{ t('Conteos acumulados heredados incluidos; las tendencias empiezan con la instrumentación nueva y no reconstruyen el pasado.', 'Includes legacy accumulated counts; trends start with the new instrumentation and do not reconstruct the past.') }}</p>
               </div>
-              <button type="button" class="action-delete scope-delete" :disabled="busy"
-                :aria-label="`${t('Eliminar contexto. Proyecto:', 'Delete context. Project:')} ${JSON.stringify(scope.project)}. ${t('Contexto:', 'Context:')} ${JSON.stringify(scope.context)}`"
-                @click="removeScope(scope)">{{ t('Eliminar contexto', 'Delete context') }}</button>
+              <button type="button" class="action-delete" :disabled="busy || !hasHabitData" @click="clearHabits">{{ t('Borrar hábitos', 'Clear habits') }}</button>
             </header>
-            <div class="entry-list">
-              <div v-for="item in scope.items" :key="item.id" class="entry">
-                <div class="entry-content">
-                  <p class="entry-summary">{{ item.summary }}</p>
-                  <time :datetime="item.createdAt">{{ new Date(item.createdAt).toLocaleString(language) }}</time>
-                </div>
-                <div class="entry-actions">
-                  <button type="button" class="action-edit" :disabled="busy"
-                    :aria-label="`${t('Editar punto guardado', 'Edit checkpoint')}: ${item.summary}`"
-                    @click="edit(item)">{{ t('Editar', 'Edit') }}</button>
-                  <button type="button" class="action-delete" :disabled="busy"
-                    :aria-label="`${t('Eliminar punto guardado', 'Delete checkpoint')}: ${item.summary}`"
-                    @click="removeCheckpoint(item)">{{ t('Eliminar', 'Delete') }}</button>
-                </div>
-              </div>
+            <div class="report-grid">
+              <article v-for="group in reports" :key="group.key" class="report-card">
+                <header class="report-card-head">
+                  <h3>{{ reportTitle(group.key) }}</h3>
+                  <strong class="report-total">{{ group.total }}</strong>
+                </header>
+                <ol v-if="group.items.length" class="report-ranking">
+                  <li v-for="item in group.items" :key="item.key">
+                    <div class="report-label">
+                      <span>{{ signalLabel(item.signal) }} · {{ kindLabel(item.kind) }} · {{ item.name }}</span>
+                      <code>{{ item.key }}</code>
+                    </div>
+                    <strong>{{ item.count }}</strong>
+                  </li>
+                </ol>
+                <p v-else class="empty-report">{{ t('Sin conteos.', 'No counts yet.') }}</p>
+              </article>
             </div>
-          </article>
-        </div>
-      </section>
-    </template>
-  </main>
+
+            <div class="trend-panel">
+              <h3>{{ t('Tendencia diaria · UTC', 'Daily trend · UTC') }}</h3>
+              <p v-if="!trend.length" class="empty-report">{{ t('Aún no hay actividad diaria. La serie comienza ahora; los conteos anteriores no tienen fecha asignada.', 'No daily activity yet. The series starts now; earlier counts have no assigned date.') }}</p>
+              <template v-else>
+                <p class="section-note">{{ t(`Días registrados: ${trend[0].date} – ${trend.at(-1).date}.`, `Recorded days: ${trend[0].date} – ${trend.at(-1).date}.`) }}</p>
+                <ul class="trend-legend" :aria-label="t('Leyenda del gráfico', 'Chart legend')">
+                  <li class="tools-series">{{ t('Herramientas', 'Tools') }}</li>
+                  <li class="commands-series">{{ t('Comandos', 'Commands') }}</li>
+                </ul>
+                <svg class="trend-chart" viewBox="0 0 720 180" role="img" aria-labelledby="trend-title trend-desc">
+                  <title id="trend-title">{{ t('Conteos diarios por categoría', 'Daily counts by category') }}</title>
+                  <desc id="trend-desc">{{ t(`Gráfico de barras con ${trend.length} días registrados en UTC; no hay historial anterior a la instrumentación.`, `Bar chart with ${trend.length} recorded days in UTC; there is no history before instrumentation.`) }}</desc>
+                  <line x1="28" y1="152" x2="704" y2="152" class="chart-axis" />
+                  <rect v-for="bar in bars" :key="`${bar.date}-${bar.key}`" :class="`${bar.key}-series`"
+                    :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height">
+                    <title>{{ `${bar.date} · ${reportTitle(bar.key)}: ${bar.count}` }}</title>
+                  </rect>
+                  <text :x="trend.length === 1 ? 360 : 28" y="173" :text-anchor="trend.length === 1 ? 'middle' : 'start'">{{ trend[0].date }}</text>
+                  <text v-if="trend.length > 1" x="704" y="173" text-anchor="end">{{ trend.at(-1).date }}</text>
+                </svg>
+              </template>
+            </div>
+          </section>
+
+          <section id="checkpoints" aria-labelledby="checkpoints-heading">
+            <h2 id="checkpoints-heading">{{ t('Puntos guardados', 'Saved checkpoints') }}</h2>
+            <p v-if="!scopes.length">{{ t('No hay puntos guardados.', 'No checkpoints saved.') }}</p>
+            <div v-else class="scope-list">
+              <details v-for="scope in scopes" :key="scope.key" class="scope">
+                <summary class="project-summary">
+                  <div class="scope-provenance">
+                    <span class="scope-caption">{{ t('Directorio', 'Directory') }} <strong class="scope-directory">{{ projectDirectoryLabel(scope, language) }}</strong></span>
+                    <span class="scope-caption">{{ t('Proyecto', 'Project') }} · {{ scope.items.length }} {{ scope.items.length === 1 ? t('punto', 'checkpoint') : t('puntos', 'checkpoints') }}</span>
+                    <code>{{ scope.project }}</code>
+                  </div>
+                </summary>
+                <div class="project-checkpoints">
+                  <div v-for="item in scope.items" :key="item.id" class="entry">
+                    <div class="entry-content">
+                      <h3 class="entry-title">{{ checkpointTitle(item, language) }}</h3>
+                      <p class="entry-summary">{{ item.summary }}</p>
+                      <p class="entry-context"><span>{{ t('Contexto', 'Context') }}</span> <code>{{ item.context }}</code></p>
+                      <time :datetime="item.createdAt">{{ new Date(item.createdAt).toLocaleString(language) }}</time>
+                    </div>
+                    <div class="entry-actions">
+                      <button type="button" class="action-edit" :disabled="busy"
+                        :aria-label="`${t('Editar punto guardado', 'Edit checkpoint')}: ${item.summary}`"
+                        @click="edit(item)">{{ t('Editar', 'Edit') }}</button>
+                      <button type="button" class="action-delete" :disabled="busy"
+                        :aria-label="`${t('Eliminar punto guardado', 'Delete checkpoint')}: ${item.summary}`"
+                        @click="removeCheckpoint(item)">{{ t('Eliminar', 'Delete') }}</button>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </section>
+        </template>
+      </main>
+    </div>
+  </div>
 </template>
