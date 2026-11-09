@@ -17,7 +17,7 @@ after(async () => {
   await rm(testDataHome, { recursive: true, force: true })
 })
 
-test("counts explicit user requests without persisting prompt data or clearing storage", async () => {
+test("counts only allowlisted categories without persisting prompt data or exposing a clear command", async () => {
   await saveHabitCounts({})
   const values = new Map()
   const removeCalls = []
@@ -119,6 +119,7 @@ test("counts explicit user requests without persisting prompt data or clearing s
   const serialized = JSON.stringify(profile)
   for (const secret of ["git status", "private", "secret-", "token", "private-agent-secret"]) {
     assert.equal(serialized.includes(secret), false)
+    assert.equal(JSON.stringify(await getData()).includes(secret), false)
   }
 
   await saveHabitCounts({ ...profile.counts, "request:cli:npm": 5 })
@@ -131,9 +132,8 @@ test("counts explicit user requests without persisting prompt data or clearing s
   assert.match(shown.content, /solicita comando npm \(5\)/)
   assert.deepEqual(storageReads, ["profile-v1"])
   assert.deepEqual(storageWrites, [])
-  assert.equal(commands.has("habit-memory-clear"), true)
-  await commands.get("habit-memory-clear").execute({ sessionID: "test-session" })
-  assert.deepEqual((await getData()).habits.counts, {})
+  assert.equal(commands.has("habit-memory-clear"), false)
+  assert.ok((await getData()).habits.counts["request:cli:git"])
   assert.deepEqual(storageWrites, [])
   assert.deepEqual(removeCalls, [])
 })
@@ -201,6 +201,18 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
     ["clear-a", "project-a-id"],
     ["global-session", "global"],
   ])
+  const sessionTitleBySession = new Map([
+    ["save-a", "Metrics review"],
+    ["save-a-parallel", "   "],
+    ["save-b", "x".repeat(201)],
+  ])
+  const directoryBySession = new Map([
+    ["save-a", "/home/alice/private-metrics"],
+    ["save-a-parallel", "relative/no-project"],
+    ["save-b", `/tmp/${"x".repeat(201)}`],
+    ["read-a-new", "/home/alice/project-a"],
+    ["read-a-continue", "/"],
+  ])
   const hooks = new Map()
   const tools = new Map()
   const commands = new Map()
@@ -223,7 +235,11 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
       async hook(name, callback) { hooks.set(`session:${name}`, callback) },
       async get({ sessionID }) {
         const projectID = projectBySession.get(sessionID)
-        return projectID ? { projectID } : {}
+        return projectID ? {
+          projectID,
+          ...(sessionTitleBySession.has(sessionID) ? { title: sessionTitleBySession.get(sessionID) } : {}),
+          ...(directoryBySession.has(sessionID) ? { location: { directory: directoryBySession.get(sessionID) } } : {}),
+        } : {}
       },
       async synthetic(input) { syntheticCalls.push(input) },
     },
@@ -250,6 +266,9 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   const contextA = `session-${createHash("sha256").update("save-a").digest("hex")}`
   const checkpointA = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === contextA)
   assert.ok(checkpointA)
+  assert.equal(checkpointA.sessionTitle, "Metrics review")
+  assert.equal(checkpointA.projectDirectoryName, "private-metrics")
+  assert.equal(JSON.stringify(checkpointA).includes("/home/alice"), false)
   assert.ok(checkpointA.summary.length <= 240)
   assert.match(checkpointA.summary, /Objetivo: Implementar panel de métricas/)
   assert.match(checkpointA.summary, /Siguiente paso: Ejecutar pruebas/)
@@ -261,6 +280,8 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   const contextParallel = `session-${createHash("sha256").update("save-a-parallel").digest("hex")}`
   const checkpointParallel = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === contextParallel)
   assert.ok(checkpointParallel)
+  assert.equal(Object.hasOwn(checkpointParallel, "sessionTitle"), false)
+  assert.equal(Object.hasOwn(checkpointParallel, "projectDirectoryName"), false)
   assert.notEqual(checkpointParallel.id, checkpointA.id)
 
   const contextFor = async (sessionID) => {
@@ -281,6 +302,8 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   const contextB = `session-${createHash("sha256").update("save-b").digest("hex")}`
   const checkpointB = (await getData()).checkpoints.find((c) => c.project === projectB && c.context === contextB)
   assert.ok(checkpointB)
+  assert.equal(Object.hasOwn(checkpointB, "sessionTitle"), false)
+  assert.equal(Object.hasOwn(checkpointB, "projectDirectoryName"), false)
   assert.notEqual(contextA, contextB)
   const bSessionText = await contextFor("read-b2")
   assert.doesNotMatch(bSessionText, /Implementar servicio B/)
@@ -290,6 +313,8 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
   const admittedNewRequest = await promptFor("read-a-new", "new-request", newRequest)
   assert.equal(admittedNewRequest.prompt.text, newRequest)
   await save.execute({ objective: "Implementar panel de métricas", next_step: "Validar estado" }, { sessionID: "read-a-new" })
+  const checkpointNew = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === `session-${createHash("sha256").update("read-a-new").digest("hex")}`)
+  assert.equal(checkpointNew.projectDirectoryName, "project-a")
   const newSessionText = await contextFor("read-a-new")
   assert.match(newSessionText, /Objetivo: Implementar panel de métricas/)
   assert.match(newSessionText, /trabajo nuevo/)
@@ -298,6 +323,9 @@ test("project checkpoints stay isolated, sanitized, and clear only their project
 
   await promptFor("read-a-continue", "continue-request", "Continúa desde el checkpoint anterior.")
   await save.execute({ objective: "Continuar tarea", next_step: "Verificar repo" }, { sessionID: "read-a-continue" })
+  const checkpointContinue = (await getData()).checkpoints.find((c) => c.project === projectA && c.context === `session-${createHash("sha256").update("read-a-continue").digest("hex")}`)
+  assert.ok(checkpointContinue)
+  assert.equal(Object.hasOwn(checkpointContinue, "projectDirectoryName"), false)
   const continueText = await contextFor("read-a-continue")
   assert.match(continueText, /verifica el estado real del repositorio/)
   assert.doesNotMatch(continueText, /pregunta cuál de las dos opciones/)

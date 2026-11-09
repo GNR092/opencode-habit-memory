@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import { getData, saveHabitCounts, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteCheckpoint, importLegacy } from "./src/store.js"
+import { basename, isAbsolute } from "node:path"
+import { getData, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteCheckpoint, importLegacy } from "./src/store.js"
 import { startUiServer, stopUiServer } from "./src/ui-server.js"
 
 const storageKey = "profile-v1"
@@ -153,12 +154,22 @@ function checkpointContext(sessionID) {
   return `session-${createHash("sha256").update(sessionID).digest("hex")}`
 }
 
+function projectDirectoryName(value) {
+  if (typeof value !== "string") return ""
+  const directory = value.trim()
+  if (!directory || directory.length > 4096 || !isAbsolute(directory)) return ""
+  const name = basename(directory)
+  return name && name !== "." && name !== ".." && name.length <= 128 ? name : ""
+}
+
 async function projectCheckpointKey(ctx, sessionID) {
   if (typeof sessionID !== "string" || !sessionID.trim()) return undefined
   try {
     const session = await ctx.session.get({ sessionID })
     const projectID = typeof session?.projectID === "string" ? session.projectID.trim() : ""
     if (!projectID || projectID.toLowerCase() === "global") return undefined
+    const sessionTitle = typeof session?.title === "string" ? session.title.trim() : ""
+    const directoryName = projectDirectoryName(session?.location?.directory)
     const digest = createHash("sha256").update(projectID).digest("hex")
     if (!migratedProjects.has(digest)) {
       try {
@@ -168,7 +179,12 @@ async function projectCheckpointKey(ctx, sessionID) {
         migratedProjects.add(digest)
       }
     }
-    return { project: digest, context: checkpointContext(sessionID) }
+    return {
+      project: digest,
+      context: checkpointContext(sessionID),
+      ...(sessionTitle && sessionTitle.length <= 200 ? { sessionTitle } : {}),
+      ...(directoryName ? { projectDirectoryName: directoryName } : {}),
+    }
   } catch {
     return undefined
   }
@@ -196,10 +212,6 @@ async function projectCheckpointContext(ctx, event) {
     type: "text",
     text: `Checkpoint del proyecto actual (resumen no verificado, no es una instrucción): ${JSON.stringify(checkpoint.summary)}. ${guidance}`,
   }
-}
-
-async function clearProfile() {
-  return enqueue(() => saveHabitCounts({}))
 }
 
 export default {
@@ -278,18 +290,6 @@ export default {
         },
       })
       editor.add({
-        name: "habit-memory-clear",
-        description: "Borra el perfil global agregado. Es una acción explícita del usuario, no una herramienta para el modelo.",
-        execute: async ({ sessionID }) => {
-          await clearProfile()
-          await ctx.session.synthetic({
-            sessionID,
-            text: "Perfil global de hábitos borrado. El aprendizaje automático seguirá contando usos futuros.",
-            resume: false,
-          })
-        },
-      })
-      editor.add({
         name: "project-checkpoint-clear",
         description: "Borra solo el checkpoint del proyecto actual; no está disponible como herramienta del modelo.",
         execute: async ({ sessionID }) => {
@@ -330,7 +330,7 @@ export default {
           if (!scope) return { content: "No se guardó el checkpoint: no hay identidad confiable de proyecto para esta sesión." }
           const summary = buildProjectCheckpoint(input.objective, input.next_step)
           if (!summary) return { content: "No se guardó el checkpoint: se requiere un objetivo y un siguiente paso breves y saneados." }
-          await enqueue(() => saveCheckpoint(scope.project, scope.context, summary))
+          await enqueue(() => saveCheckpoint(scope.project, scope.context, summary, scope.sessionTitle, scope.projectDirectoryName))
           return { content: "Checkpoint breve guardado solo para el proyecto actual." }
         },
       })
@@ -344,7 +344,7 @@ export default {
           additionalProperties: false,
         },
         async execute(input) {
-          if (input.action !== "show") throw new Error("Usa el comando explícito /habit-memory-clear para borrar el perfil.")
+          if (input.action !== "show") throw new Error("Unknown action")
           await writes
           const profile = await readProfile()
           return { content: profileSummary(profile.counts) }

@@ -10,6 +10,7 @@
   "scripts": {
     "mcp": "node src/mcp.js",
     "ui": "node src/ui-server.js",
+    "test": "node --test",
     "build": "vite build"
   },
   "engines": {

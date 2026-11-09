@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline"
-import { getData, saveHabitCounts, listCheckpoints, listCheckpointContexts, saveCheckpoint, deleteCheckpoint, clearCheckpoints } from "./store.js"
+import { getData, listCheckpoints, listCheckpointContexts, saveCheckpoint, deleteCheckpoint, clearCheckpoints } from "./store.js"
 
 const tools = [
   { name: "habit_memory_get", description: "Get aggregated habit counts only.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
-  { name: "habit_memory_clear", description: "Explicitly clear aggregated habits; requires confirmation.", inputSchema: { type: "object", properties: { confirm: { type: "boolean", const: true } }, required: ["confirm"], additionalProperties: false } },
   { name: "checkpoint_list", description: "List checkpoints for a project and context.", inputSchema: { type: "object", properties: { project: { type: "string", maxLength: 128 }, context: { type: "string", maxLength: 128 } }, required: ["project", "context"], additionalProperties: false } },
   { name: "checkpoint_projects", description: "List project scope hashes already present, for sharing plugin checkpoints across clients.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "checkpoint_contexts", description: "List checkpoint contexts for a project scope.", inputSchema: { type: "object", properties: { project: { type: "string", maxLength: 128 } }, required: ["project"], additionalProperties: false } },
@@ -14,12 +13,11 @@ const tools = [
 ]
 const reply = (id, result, error) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, ...(error ? { error: { code: -32603, message: error.message } } : { result }) })}\n`)
 async function call(name, a) {
-  if (!a || Object.keys(a).some((k) => !({ habit_memory_get: [], habit_memory_clear: ["confirm"], checkpoint_list: ["project","context"], checkpoint_projects: [], checkpoint_contexts: ["project"], checkpoint_save: ["project","context","summary"], checkpoint_delete: ["project","context","id"], checkpoint_clear: ["project","context","confirm"] }[name] ?? []).includes(k))) throw new Error("Invalid tool arguments")
+  if (!a || Object.keys(a).some((k) => !({ habit_memory_get: [], checkpoint_list: ["project","context"], checkpoint_projects: [], checkpoint_contexts: ["project"], checkpoint_save: ["project","context","summary"], checkpoint_delete: ["project","context","id"], checkpoint_clear: ["project","context","confirm"] }[name] ?? []).includes(k))) throw new Error("Invalid tool arguments")
   if (name === "habit_memory_get" && Object.keys(a).length === 0) return (await getData()).habits
-  if (name === "habit_memory_clear" && a.confirm === true) return saveHabitCounts({})
   if (name === "checkpoint_projects" && Object.keys(a).length === 0) return [...new Set((await getData()).checkpoints.map((c) => c.project))]
   if (name === "checkpoint_contexts") return listCheckpointContexts(a.project)
-  if (name === "checkpoint_list") return listCheckpoints(a.project, a.context)
+  if (name === "checkpoint_list") return (await listCheckpoints(a.project, a.context)).map(({ id, project, context, summary, createdAt }) => ({ id, project, context, summary, createdAt }))
   if (name === "checkpoint_save") return saveCheckpoint(a.project, a.context, a.summary)
   if (name === "checkpoint_delete") return deleteCheckpoint(a.project, a.context, a.id)
   if (name === "checkpoint_clear" && a.confirm === true) return clearCheckpoints(a.project, a.context)

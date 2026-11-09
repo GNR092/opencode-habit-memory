@@ -3,7 +3,6 @@ import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 
-const limit = 20
 const maxBytes = 2_000_000
 const categories = new Set([
   ...["bash", "read", "write", "edit", "patch", "glob", "grep", "task", "subagent", "websearch", "webfetch"].flatMap((n) => [`tool:${n}`, `request:tool:${n}`]),
@@ -13,13 +12,69 @@ const categories = new Set([
 const root = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share")
 export const storePath = join(root, "habit-memory-plugin", "store-v1.json")
 const lockPath = `${storePath}.lock`
+const recoveryPath = `${lockPath}.recovery`
+const staleLockMs = 120_000
+const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino
+async function unlinkIfSame(path, identity) {
+  try { if (sameFile(identity, await stat(path))) await unlink(path) } catch {}
+}
+async function hasRecoveryClaim() {
+  try { await stat(recoveryPath); return true } catch (error) {
+    if (error.code === "ENOENT") return false
+    throw error
+  }
+}
+async function lockSnapshot() { return { stat: await stat(lockPath), contents: await readFile(lockPath, "utf8") } }
+function sameLock(a, b) {
+  return sameFile(a.stat, b.stat) && a.stat.size === b.stat.size && a.stat.mtimeMs === b.stat.mtimeMs && a.stat.ctimeMs === b.stat.ctimeMs && a.contents === b.contents
+}
+async function recoverStaleLock() {
+  let initial
+  try {
+    initial = await lockSnapshot()
+    if (Date.now() - initial.stat.mtimeMs <= staleLockMs) return
+  } catch { return }
+  const pid = Number(initial.contents), validPid = Number.isSafeInteger(pid) && pid > 0
+  if (validPid) {
+    try { process.kill(pid, 0); return } catch (error) { if (error.code !== "ESRCH") return }
+  }
+  let claim
+  try { claim = await open(recoveryPath, "wx", 0o600) } catch { return }
+  try {
+    const before = await lockSnapshot()
+    if (!sameLock(initial, before) || Date.now() - before.stat.mtimeMs <= staleLockMs) return
+    if (validPid) {
+      try { process.kill(pid, 0); return } catch (error) { if (error.code !== "ESRCH") return }
+    }
+    const current = await lockSnapshot()
+    if (!sameLock(before, current) || Date.now() - current.stat.mtimeMs <= staleLockMs) return
+    if (validPid) {
+      try { process.kill(pid, 0); return } catch (error) { if (error.code !== "ESRCH") return }
+    }
+    await unlink(lockPath)
+  } catch {
+    // Any uncertainty leaves the existing lock in place.
+  } finally {
+    await claim.close().catch(() => {})
+    await unlink(recoveryPath).catch(() => {})
+  }
+}
 
-const empty = () => ({ version: 1, habits: { version: 1, counts: {} }, checkpoints: [] })
+const empty = () => ({ version: 1, habits: { version: 1, counts: {}, daily: {} }, checkpoints: [] })
 const text = (v, max = 240) => typeof v === "string" && v.length > 0 && v.length <= max
+const basenameValue = (v) => typeof v === "string" && v.length > 0 && v.length <= 128 && v === v.trim() && v !== "." && v !== ".." && !/[\\/\u0000-\u001f\u007f]/.test(v) ? v : undefined
+const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
 function valid(data) {
-  if (!data || Object.keys(data).some((k) => !["version", "habits", "checkpoints"].includes(k)) || data.version !== 1 || !data.habits || Object.keys(data.habits).some((k) => !["version", "counts", "legacyImported"].includes(k)) || data.habits.version !== 1 || !data.habits.counts || !Array.isArray(data.checkpoints)) throw new Error("Invalid habit-memory store schema")
+  if (!data || Object.keys(data).some((k) => !["version", "habits", "checkpoints"].includes(k)) || data.version !== 1 || !data.habits || Object.keys(data.habits).some((k) => !["version", "counts", "daily", "legacyImported"].includes(k)) || data.habits.version !== 1 || !data.habits.counts || (data.habits.legacyImported !== undefined && typeof data.habits.legacyImported !== "boolean") || !Array.isArray(data.checkpoints)) throw new Error("Invalid habit-memory store schema")
   for (const [key, count] of Object.entries(data.habits.counts)) if (!categories.has(key) || !Number.isSafeInteger(count) || count < 1 || count > 999) throw new Error("Invalid habits data")
-  if (data.checkpoints.length > 10000 || data.checkpoints.some((c) => !c || Object.keys(c).some((k) => !["id", "project", "context", "summary", "createdAt"].includes(k)) || !text(c.id, 80) || !text(c.project, 128) || !text(c.context, 128) || !text(c.summary) || !text(c.createdAt, 40))) throw new Error("Invalid checkpoint data")
+  const daily = data.habits.daily === undefined ? {} : data.habits.daily
+  if (!daily || typeof daily !== "object" || Array.isArray(daily) || Object.keys(daily).length > 365) throw new Error("Invalid daily habit data")
+  for (const [date, counts] of Object.entries(daily)) {
+    if (!validDate(date) || !counts || typeof counts !== "object" || Array.isArray(counts) || !Object.keys(counts).length) throw new Error("Invalid daily habit data")
+    for (const [key, count] of Object.entries(counts)) if (!categories.has(key) || !Number.isSafeInteger(count) || count < 1) throw new Error("Invalid daily habit data")
+  }
+  data.habits.daily = daily
+  if (data.checkpoints.length > 10000 || data.checkpoints.some((c) => !c || Object.keys(c).some((k) => !["id", "project", "context", "summary", "createdAt", "sessionTitle", "projectDirectoryName"].includes(k)) || !text(c.id, 80) || !text(c.project, 128) || !text(c.context, 128) || !text(c.summary) || !text(c.createdAt, 40) || (c.sessionTitle !== undefined && !text(c.sessionTitle, 200)) || (c.projectDirectoryName !== undefined && !basenameValue(c.projectDirectoryName)))) throw new Error("Invalid checkpoint data")
   return data
 }
 async function read() {
@@ -35,24 +90,42 @@ async function read() {
 async function locked(fn) {
   await mkdir(dirname(storePath), { recursive: true, mode: 0o700 })
   const deadline = Date.now() + 5000
-  let handle
+  let handle, identity
   while (!handle) {
-    try { handle = await open(lockPath, "wx", 0o600) }
+    try {
+      const candidate = await open(lockPath, "wx", 0o600)
+      let candidateIdentity
+      try {
+        candidateIdentity = await candidate.stat()
+        if (await hasRecoveryClaim()) {
+          await candidate.close()
+          await unlinkIfSame(lockPath, candidateIdentity)
+        } else {
+          handle = candidate
+          identity = candidateIdentity
+        }
+      } catch (error) {
+        await candidate.close().catch(() => {})
+        if (candidateIdentity) await unlinkIfSame(lockPath, candidateIdentity)
+        throw error
+      }
+    }
     catch (error) {
       if (error.code !== "EEXIST") throw error
-      try {
-        const lockStat = await stat(lockPath)
-        const pid = Number(await readFile(lockPath, "utf8"))
-        if (Date.now() - lockStat.mtimeMs > 120_000 && Number.isSafeInteger(pid) && pid > 0) {
-          try { process.kill(pid, 0) } catch (alive) { if (alive.code === "ESRCH" && (await stat(lockPath)).ino === lockStat.ino) await unlink(lockPath).catch(() => {}) }
-        }
-      } catch {}
+      await recoverStaleLock()
+    }
+    if (!handle) {
       if (Date.now() >= deadline) throw new Error("Storage is locked")
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
   }
-  await handle.writeFile(String(process.pid))
-  try { return await fn() } finally { await handle.close(); await unlink(lockPath).catch(() => {}) }
+  try {
+    await handle.writeFile(String(process.pid))
+    return await fn()
+  } finally {
+    await handle.close()
+    await unlinkIfSame(lockPath, identity)
+  }
 }
 async function write(data) {
   valid(data)
@@ -76,24 +149,41 @@ const scope = (project, context) => {
 }
 export async function getData() { return read() }
 export async function saveHabitCounts(counts) {
-  return locked(async () => { const data = await read(); data.habits = { version: 1, counts, ...(data.habits.legacyImported ? { legacyImported: true } : {}) }; await write(data) })
+  return locked(async () => { const data = await read(); data.habits = { ...data.habits, version: 1, counts }; await write(data) })
 }
 export async function incrementHabitCounts(keys) {
   return locked(async () => {
     const data = await read()
-    for (const key of keys) if (categories.has(key)) data.habits.counts[key] = Math.min(999, (data.habits.counts[key] ?? 0) + 1)
+    const accepted = [...new Set(keys.filter((key) => categories.has(key)))]
+    if (!accepted.length) return
+    const today = new Date().toISOString().slice(0, 10)
+    const cutoff = new Date(`${today}T00:00:00.000Z`)
+    cutoff.setUTCDate(cutoff.getUTCDate() - 364)
+    for (const date of Object.keys(data.habits.daily)) if (date < cutoff.toISOString().slice(0, 10) || date > today) delete data.habits.daily[date]
+    const daily = data.habits.daily[today] ??= {}
+    for (const key of accepted) {
+      data.habits.counts[key] = Math.min(999, (data.habits.counts[key] ?? 0) + 1)
+      daily[key] = Math.min(Number.MAX_SAFE_INTEGER, (daily[key] ?? 0) + 1)
+    }
     await write(data)
   })
 }
-export async function saveCheckpoint(project, context, summary) {
+export async function clearHabits() {
+  return locked(async () => {
+    const data = await read()
+    data.habits = { version: 1, counts: {}, daily: {}, ...(data.habits.legacyImported === undefined ? {} : { legacyImported: data.habits.legacyImported }) }
+    await write(data)
+  })
+}
+export async function saveCheckpoint(project, context, summary, sessionTitle, projectDirectoryName) {
   scope(project, context)
   if (!text(summary)) throw new Error("summary is required (max 240 chars)")
   return locked(async () => {
-    const data = await read(), record = { id: randomUUID(), project, context, summary, createdAt: new Date().toISOString() }
+    const data = await read()
+    const title = typeof sessionTitle === "string" ? sessionTitle.trim() : ""
+    const directory = basenameValue(typeof projectDirectoryName === "string" ? projectDirectoryName.trim() : projectDirectoryName)
+    const record = { id: randomUUID(), project, context, summary, createdAt: new Date().toISOString(), ...(title && title.length <= 200 ? { sessionTitle: title } : {}), ...(directory ? { projectDirectoryName: directory } : {}) }
     data.checkpoints.push(record)
-    const same = data.checkpoints.filter((c) => c.project === project && c.context === context).sort((a,b) => a.createdAt.localeCompare(b.createdAt))
-    const remove = new Set(same.slice(0, -limit).map((c) => c.id))
-    data.checkpoints = data.checkpoints.filter((c) => !remove.has(c.id))
     await write(data); return record
   })
 }
@@ -133,7 +223,7 @@ export async function importLegacy(profile, checkpoint) {
       const counts = profile?.version === 1 && profile.counts
         ? Object.fromEntries(Object.entries(profile.counts).filter(([k,v]) => categories.has(k) && Number.isSafeInteger(v) && v > 0).map(([k,v]) => [k, Math.min(v,999)]))
         : data.habits.counts
-      data.habits = { version: 1, counts, legacyImported: true }
+      data.habits = { ...data.habits, version: 1, counts, legacyImported: true }
       changed = true
     }
     if (checkpoint?.version === 1 && text(checkpoint.summary) && text(checkpoint.project, 128) && !data.checkpoints.some((c) => c.id === `legacy-${checkpoint.project}`)) {
