@@ -38,7 +38,7 @@ export function createUiServer({ port = 0 } = {}) {
       return
     }
     if (method === "GET" && url.pathname === "/api/data") {
-      try { const data = await getData(); send(200, JSON.stringify({ habits: data.habits, checkpoints: data.checkpoints })) }
+      try { const data = await getData(); send(200, JSON.stringify({ habits: data.habits, checkpoints: data.checkpoints, todos: data.todos })) }
       catch { send(500, JSON.stringify({ error: "Unable to read local memory" })) }
       return
     }

@@ -1,6 +1,6 @@
 <script>
 import { computed, onMounted, ref, watch } from 'vue'
-import { checkpointTitle, dailyTrend, groupCheckpoints, projectDirectoryLabel, reportGroups, trendBars } from './ui-model.js'
+import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, projectDirectoryLabel, reportGroups, trendBars } from './ui-model.js'
 
 export default {
   setup() {
@@ -9,9 +9,12 @@ export default {
     const language = ref('es')
     const theme = ref('dark')
     const busy = ref(false)
+    const includeArchived = ref(false)
     const token = document.querySelector('meta[name="habit-token"]')?.content
     const t = (es, en) => language.value === 'es' ? es : en
     const scopes = computed(() => groupCheckpoints(data.value?.checkpoints ?? []))
+    const todoGroups = computed(() => groupTodos(data.value?.todos ?? [], includeArchived.value))
+    const todoStatuses = ['pending', 'completed', 'archived']
     const reports = computed(() => reportGroups(data.value?.habits.counts ?? {}))
     const trend = computed(() => dailyTrend(data.value?.habits.daily ?? {}))
     const bars = computed(() => trendBars(trend.value))
@@ -27,6 +30,11 @@ export default {
     const signalLabel = (signal) => signal === 'request'
       ? t('solicitud explícita', 'explicit request')
       : t('uso observado', 'observed use')
+    const todoStatusLabel = (status) => ({
+      pending: t('Pendientes', 'Pending'),
+      completed: t('Completados', 'Completed'),
+      archived: t('Archivados', 'Archived'),
+    }[status] ?? status)
 
     watch(language, (value) => { document.documentElement.lang = value })
     watch(theme, (value) => { document.documentElement.dataset.theme = value }, { immediate: true })
@@ -82,7 +90,7 @@ export default {
     }
 
     onMounted(load)
-    return { data, error, language, theme, busy, t, scopes, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
+    return { data, error, language, theme, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
   },
 }
 </script>
@@ -94,6 +102,7 @@ export default {
       <nav class="sidebar-nav" :aria-label="t('Navegación principal', 'Main navigation')">
         <a href="#reports">{{ t('Informes', 'Reports') }}</a>
         <a href="#checkpoints">{{ t('Puntos guardados', 'Saved checkpoints') }}</a>
+        <a href="#todos">{{ t('TODOs', 'TODOs') }}</a>
       </nav>
       <p class="local-note">{{ t('Tus datos permanecen en este equipo.', 'Your data stays on this machine.') }}</p>
     </aside>
@@ -103,7 +112,7 @@ export default {
         <div>
           <p class="eyebrow">{{ t('MEMORIA DE TRABAJO', 'WORKING MEMORY') }}</p>
           <h1>{{ t('Tu memoria de trabajo.', 'Your working memory.') }}</h1>
-          <p class="intro">{{ t('Hábitos y puntos guardados en este equipo.', 'Stored habits and checkpoints, on this machine.') }}</p>
+          <p class="intro">{{ t('Hábitos, puntos guardados y TODOs de este equipo.', 'Stored habits, checkpoints, and TODOs on this machine.') }}</p>
         </div>
         <div class="masthead-controls">
           <label class="language"><span>{{ t('Idioma', 'Language') }}</span>
@@ -121,7 +130,7 @@ export default {
       </header>
 
       <main>
-        <p class="page-note">{{ t('Este índice contiene solo resúmenes y hábitos agregados guardados por el complemento.', 'This index contains only summaries and aggregate habits saved by the plugin.') }}</p>
+        <p class="page-note">{{ t('Este índice contiene resúmenes, hábitos agregados y TODOs persistentes del complemento.', 'This index contains summaries, aggregate habits, and persistent TODOs saved by the plugin.') }}</p>
         <p v-if="error" class="notice" role="alert">{{ error }} <button type="button" :disabled="busy" @click="load">{{ t('Reintentar', 'Retry') }}</button></p>
         <p v-if="busy" role="status">{{ t('Guardando cambios…', 'Saving changes…') }}</p>
         <p v-if="!data && !error" role="status">{{ t('Leyendo la memoria local…', 'Reading local memory…') }}</p>
@@ -213,6 +222,42 @@ export default {
                         @click="removeCheckpoint(item)">{{ t('Eliminar', 'Delete') }}</button>
                     </div>
                   </div>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section id="todos" aria-labelledby="todos-heading">
+            <header class="report-heading todo-heading">
+              <div>
+                <h2 id="todos-heading">{{ t('TODOs por proyecto', 'TODOs by project') }}</h2>
+                <p class="section-note">{{ t('Tareas persistentes agrupadas por proyecto y estado.', 'Persistent tasks grouped by project and status.') }}</p>
+              </div>
+              <label class="include-archived">
+                <input v-model="includeArchived" type="checkbox">
+                <span>{{ t('Incluir archivados', 'Include archived') }}</span>
+              </label>
+            </header>
+            <p v-if="!todoGroups.length" class="empty-report">
+              {{ includeArchived ? t('No hay TODOs guardados.', 'No TODOs saved.') : t('No hay TODOs activos. Incluye los archivados para verlos.', 'No active TODOs. Include archived items to see them.') }}
+            </p>
+            <div v-else class="scope-list">
+              <details v-for="group in todoGroups" :key="group.key" class="scope todo-project">
+                <summary class="project-summary">
+                  <div class="scope-provenance">
+                    <span class="scope-caption">{{ t('Proyecto', 'Project') }} · {{ group.total }} {{ group.total === 1 ? t('tarea', 'task') : t('tareas', 'tasks') }}</span>
+                    <code>{{ group.project }}</code>
+                  </div>
+                </summary>
+                <div class="todo-status-list">
+                  <template v-for="status in todoStatuses" :key="status">
+                    <section v-if="group[status].length" class="todo-status">
+                      <h3 class="todo-status-heading"><span>{{ todoStatusLabel(status) }}</span><span>{{ group[status].length }}</span></h3>
+                      <ul class="todo-items">
+                        <li v-for="todo in group[status]" :key="todo.id">{{ todo.task }}</li>
+                      </ul>
+                    </section>
+                  </template>
                 </div>
               </details>
             </div>

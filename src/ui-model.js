@@ -14,6 +14,18 @@ export function groupCheckpoints(checkpoints) {
   return [...groups.values()].map((group) => ({ ...group, directoryName: directories.get(group.key)?.name ?? '' }))
 }
 
+export function groupTodos(todos = [], includeArchived = false) {
+  const groups = new Map()
+  for (const todo of todos) {
+    if (!includeArchived && todo.status === 'archived') continue
+    if (!groups.has(todo.project)) groups.set(todo.project, { key: todo.project, project: todo.project, total: 0, pending: [], completed: [], archived: [] })
+    const group = groups.get(todo.project)
+    group[todo.status].push(todo)
+    group.total++
+  }
+  return [...groups.values()]
+}
+
 export function projectDirectoryLabel(scope, language = 'es') {
   return typeof scope?.directoryName === 'string' && scope.directoryName.trim()
     ? scope.directoryName

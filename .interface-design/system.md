@@ -15,7 +15,7 @@ Consola privada de observabilidad para quien abre la herramienta entre tareas y 
 
 ## Patrones de información
 
-- Navegación por anclas a **Patrones**, **Informes** y **Puntos guardados**, con indicador explícito de almacenamiento local.
+- Navegación por anclas a **Patrones**, **Informes**, **Puntos guardados** y **TODOs**, con indicador explícito de almacenamiento local.
 - Los informes agrupan y ordenan conteos existentes por **Herramientas**, **Comandos** y **Actividad de agentes · señal débil**. Conservar en cada renglón la clave/señal original para distinguir solicitudes explícitas del uso observado.
 - La tendencia es una gráfica SVG nativa de conteos allowlisted por día UTC, con historial móvil de 365 días. Debe indicar que empieza con la instrumentación nueva, sin fechas ni actividad fabricadas para los conteos legacy.
 - El borrado de hábitos agregados se ofrece solo en la WebUI, como acción destructiva roja y confirmada; elimina acumulados y tendencia, pero no checkpoints.

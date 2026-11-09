@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { checkpointTitle, dailyTrend, groupCheckpoints, projectDirectoryLabel, reportGroups, trendBars } from '../src/ui-model.js'
+import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, projectDirectoryLabel, reportGroups, trendBars } from '../src/ui-model.js'
 
 test('checkpoint groups expand by exact project and retain each context/checkpoint', () => {
   const first = { id: 'one', project: 'a / b', context: 'c' }
@@ -28,6 +28,21 @@ test('project groups choose the newest valid directory basename and localize the
   assert.equal(projectDirectoryLabel(groups[1], 'es'), 'Directorio no disponible')
   assert.equal(projectDirectoryLabel(groups[1], 'en'), 'Directory unavailable')
   assert.equal(projectDirectoryLabel({ directoryName: '<img src=x onerror=alert(1)>' }, 'es'), '<img src=x onerror=alert(1)>')
+})
+
+test('TODOs group by exact project and status, hiding archived items by default', () => {
+  const pending = { id: 'one', project: 'a / b', task: 'Pending task', status: 'pending' }
+  const completed = { id: 'two', project: 'a / b', task: 'Done task', status: 'completed' }
+  const archived = { id: 'three', project: 'a', task: 'Archived task', status: 'archived' }
+  const todos = [pending, completed, archived]
+
+  assert.deepEqual(groupTodos(todos).map(({ project, total, pending, completed, archived }) => [project, total, pending, completed, archived]), [
+    ['a / b', 2, [pending], [completed], []],
+  ])
+  assert.deepEqual(groupTodos(todos, true).map(({ project, total, pending, completed, archived }) => [project, total, pending, completed, archived]), [
+    ['a / b', 2, [pending], [completed], []],
+    ['a', 1, [], [], [archived]],
+  ])
 })
 
 test('checkpoint titles use bilingual fallback only when no valid title exists', () => {

@@ -16,6 +16,11 @@ test("local UI serves data and protects checkpoint mutations", async () => {
   await store.saveCheckpoint("project-b", "session-b", "Keep this")
   await store.saveCheckpoint("a / b", "c", "First colliding scope")
   await store.saveCheckpoint("a", "b / c", "Second colliding scope")
+  await store.createTodo("project-a", "Review the release notes")
+  const completedTodo = await store.createTodo("project-a", "Confirm the backup")
+  await store.updateTodo("project-a", completedTodo.id, undefined, "completed")
+  const archivedTodo = await store.createTodo("project-b", "Old follow-up")
+  await store.archiveTodo("project-b", archivedTodo.id)
   await store.importLegacy({ version: 1, counts: { "request:cli:git": 5 } })
   await store.incrementHabitCounts(["tool:bash"])
   const server = createUiServer()
@@ -45,6 +50,11 @@ test("local UI serves data and protects checkpoint mutations", async () => {
     assert.equal(read.checkpoints[0].projectDirectoryName, "readable-project")
     assert.equal(read.habits.counts["request:cli:git"], 5)
     assert.equal(read.habits.daily[new Date().toISOString().slice(0, 10)]["tool:bash"], 1)
+    assert.deepEqual(read.todos.map(({ project, task, status }) => [project, task, status]), [
+      ["project-a", "Review the release notes", "pending"],
+      ["project-a", "Confirm the backup", "completed"],
+      ["project-b", "Old follow-up", "archived"],
+    ])
     assert.equal(await (await send("/api/checkpoint/edit", { project: "project-a", context: "session-a", id: a.id, summary: "Edited safely" })).status, 200)
     assert.equal((await store.getData()).checkpoints.find(({ id }) => id === a.id).sessionTitle, "OpenCode session title")
     assert.equal((await store.getData()).checkpoints.find(({ id }) => id === a.id).projectDirectoryName, "readable-project")
