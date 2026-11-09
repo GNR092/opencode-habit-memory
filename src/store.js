@@ -60,12 +60,12 @@ async function recoverStaleLock() {
   }
 }
 
-const empty = () => ({ version: 1, habits: { version: 1, counts: {}, daily: {} }, checkpoints: [] })
+const empty = () => ({ version: 1, habits: { version: 1, counts: {}, daily: {} }, checkpoints: [], todos: [] })
 const text = (v, max = 240) => typeof v === "string" && v.length > 0 && v.length <= max
 const basenameValue = (v) => typeof v === "string" && v.length > 0 && v.length <= 128 && v === v.trim() && v !== "." && v !== ".." && !/[\\/\u0000-\u001f\u007f]/.test(v) ? v : undefined
 const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
 function valid(data) {
-  if (!data || Object.keys(data).some((k) => !["version", "habits", "checkpoints"].includes(k)) || data.version !== 1 || !data.habits || Object.keys(data.habits).some((k) => !["version", "counts", "daily", "legacyImported"].includes(k)) || data.habits.version !== 1 || !data.habits.counts || (data.habits.legacyImported !== undefined && typeof data.habits.legacyImported !== "boolean") || !Array.isArray(data.checkpoints)) throw new Error("Invalid habit-memory store schema")
+  if (!data || Object.keys(data).some((k) => !["version", "habits", "checkpoints", "todos"].includes(k)) || data.version !== 1 || !data.habits || Object.keys(data.habits).some((k) => !["version", "counts", "daily", "legacyImported"].includes(k)) || data.habits.version !== 1 || !data.habits.counts || (data.habits.legacyImported !== undefined && typeof data.habits.legacyImported !== "boolean") || !Array.isArray(data.checkpoints) || (data.todos !== undefined && !Array.isArray(data.todos))) throw new Error("Invalid habit-memory store schema")
   for (const [key, count] of Object.entries(data.habits.counts)) if (!categories.has(key) || !Number.isSafeInteger(count) || count < 1 || count > 999) throw new Error("Invalid habits data")
   const daily = data.habits.daily === undefined ? {} : data.habits.daily
   if (!daily || typeof daily !== "object" || Array.isArray(daily) || Object.keys(daily).length > 365) throw new Error("Invalid daily habit data")
@@ -75,6 +75,8 @@ function valid(data) {
   }
   data.habits.daily = daily
   if (data.checkpoints.length > 10000 || data.checkpoints.some((c) => !c || Object.keys(c).some((k) => !["id", "project", "context", "summary", "createdAt", "sessionTitle", "projectDirectoryName"].includes(k)) || !text(c.id, 80) || !text(c.project, 128) || !text(c.context, 128) || !text(c.summary) || !text(c.createdAt, 40) || (c.sessionTitle !== undefined && !text(c.sessionTitle, 200)) || (c.projectDirectoryName !== undefined && !basenameValue(c.projectDirectoryName)))) throw new Error("Invalid checkpoint data")
+  data.todos ??= []
+  if (data.todos.length > 10000 || data.todos.some((todo) => !todo || Object.keys(todo).some((k) => !["id", "project", "task", "status", "createdAt", "updatedAt"].includes(k)) || !text(todo.id, 80) || !text(todo.project, 128) || !text(todo.task) || todo.task !== todo.task.trim() || !["pending", "completed", "archived"].includes(todo.status) || !text(todo.createdAt, 40) || !text(todo.updatedAt, 40))) throw new Error("Invalid TODO data")
   return data
 }
 async function read() {
@@ -214,6 +216,49 @@ export async function updateCheckpoint(project, context, id, summary) {
 export async function clearCheckpoints(project, context) {
   scope(project, context)
   return locked(async () => { const data = await read(), before = data.checkpoints.length; data.checkpoints = data.checkpoints.filter((c) => c.project !== project || c.context !== context); if (before !== data.checkpoints.length) await write(data); return before - data.checkpoints.length })
+}
+export async function createTodo(project, taskValue) {
+  if (!text(project, 128)) throw new Error("project is required (max 128 chars)")
+  const task = typeof taskValue === "string" ? taskValue.trim() : ""
+  if (!text(task)) throw new Error("task is required (max 240 chars)")
+  return locked(async () => {
+    const data = await read()
+    if (data.todos.length >= 10000) throw new Error("TODO limit reached")
+    const now = new Date().toISOString()
+    const todo = { id: randomUUID(), project, task, status: "pending", createdAt: now, updatedAt: now }
+    data.todos.push(todo)
+    await write(data)
+    return todo
+  })
+}
+export async function listTodos(project, includeArchived = false) {
+  if (!text(project, 128) || typeof includeArchived !== "boolean") throw new Error("project and a boolean archive filter are required")
+  return (await read()).todos.filter((todo) => todo.project === project && (includeArchived || todo.status !== "archived"))
+}
+export async function updateTodo(project, id, taskValue, status) {
+  if (!text(project, 128) || !text(id, 80)) throw new Error("project and id are required")
+  const task = taskValue === undefined ? undefined : typeof taskValue === "string" ? taskValue.trim() : ""
+  if ((task !== undefined && !text(task)) || (status !== undefined && !["pending", "completed"].includes(status)) || (task === undefined && status === undefined)) throw new Error("a non-empty task or pending/completed status is required")
+  return locked(async () => {
+    const data = await read(), todo = data.todos.find((item) => item.project === project && item.id === id && item.status !== "archived")
+    if (!todo) return false
+    if (task !== undefined) todo.task = task
+    if (status !== undefined) todo.status = status
+    todo.updatedAt = new Date().toISOString()
+    await write(data)
+    return true
+  })
+}
+export async function archiveTodo(project, id) {
+  if (!text(project, 128) || !text(id, 80)) throw new Error("project and id are required")
+  return locked(async () => {
+    const data = await read(), todo = data.todos.find((item) => item.project === project && item.id === id && item.status !== "archived")
+    if (!todo) return false
+    todo.status = "archived"
+    todo.updatedAt = new Date().toISOString()
+    await write(data)
+    return true
+  })
 }
 export async function importLegacy(profile, checkpoint) {
   return locked(async () => {

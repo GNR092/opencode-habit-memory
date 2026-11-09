@@ -8,7 +8,7 @@ import { dirname, join } from "node:path"
 const previousDataHome = process.env.XDG_DATA_HOME
 const testDataHome = await mkdtemp(join(tmpdir(), "habit-memory-storage-"))
 process.env.XDG_DATA_HOME = testDataHome
-const { clearHabits, getData, incrementHabitCounts, saveCheckpoint, updateCheckpoint, listCheckpoints, listCheckpointContexts, deleteCheckpoint, clearCheckpoints, importLegacy, storePath } = await import("../src/store.js")
+const { clearHabits, getData, incrementHabitCounts, saveCheckpoint, updateCheckpoint, listCheckpoints, listCheckpointContexts, deleteCheckpoint, clearCheckpoints, createTodo, listTodos, updateTodo, archiveTodo, importLegacy, storePath } = await import("../src/store.js")
 const lockPath = `${storePath}.lock`
 beforeEach(async () => { await rm(storePath, { force: true }); await rm(lockPath, { force: true }); await rm(`${lockPath}.recovery`, { force: true }) })
 after(async () => {
@@ -36,6 +36,33 @@ test("checkpoint retention, isolation, migration idempotence and scoped deletion
   assert.equal(data.habits.counts["request:cli:git"], 4)
   assert.equal(data.checkpoints.filter((c) => c.id === "legacy-legacy-project").length, 1)
   assert.equal(JSON.stringify(data).includes("transcript"), false)
+})
+
+test("TODOs are project-scoped, updateable, archivable and survive a process restart", async () => {
+  const created = await createTodo("project-a", "Implement TODO persistence")
+  await createTodo("project-b", "Keep this project isolated")
+  assert.equal(created.status, "pending")
+  assert.deepEqual((await listTodos("project-a")).map(({ task }) => task), ["Implement TODO persistence"])
+  assert.equal(await updateTodo("project-a", created.id, "Implement and verify TODO persistence", "completed"), true)
+  assert.equal((await listTodos("project-a"))[0].status, "completed")
+
+  const moduleUrl = new URL("../src/store.js", import.meta.url).href
+  const code = `const s=await import(${JSON.stringify(moduleUrl)}); process.stdout.write(JSON.stringify(await s.listTodos('project-a')))`
+  const persisted = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { env: process.env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = "", stderr = ""
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    child.once("error", reject)
+    child.once("exit", (code) => code === 0 ? resolve(stdout) : reject(new Error(`child exited ${code}: ${stderr}`)))
+  })
+  assert.equal(JSON.parse(persisted)[0].task, "Implement and verify TODO persistence")
+  assert.equal(await updateTodo("project-a", created.id, undefined, "pending"), true)
+  assert.equal(await archiveTodo("project-a", created.id), true)
+  assert.deepEqual(await listTodos("project-a"), [])
+  assert.equal((await listTodos("project-a", true))[0].status, "archived")
+  assert.equal(await archiveTodo("project-a", created.id), false)
+  assert.deepEqual((await listTodos("project-b")).map(({ task }) => task), ["Keep this project isolated"])
 })
 
 test("independent processes preserve writes and atomic JSON remains readable", async () => {
