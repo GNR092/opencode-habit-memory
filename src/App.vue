@@ -1,6 +1,7 @@
 <script>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, projectDirectoryLabel, reportGroups, trendBars } from './ui-model.js'
+import { viewFromHash, watchHashView } from './ui-navigation.js'
 
 export default {
   setup() {
@@ -8,12 +9,14 @@ export default {
     const error = ref('')
     const language = ref('es')
     const theme = ref('dark')
+    const activeView = ref(viewFromHash(window.location.hash))
     const busy = ref(false)
     const includeArchived = ref(false)
     const token = document.querySelector('meta[name="habit-token"]')?.content
     const t = (es, en) => language.value === 'es' ? es : en
     const scopes = computed(() => groupCheckpoints(data.value?.checkpoints ?? []))
-    const todoGroups = computed(() => groupTodos(data.value?.todos ?? [], includeArchived.value))
+    const projectDirectories = computed(() => new Map(scopes.value.map(({ project, directoryName }) => [project, directoryName])))
+    const todoGroups = computed(() => groupTodos(data.value?.todos ?? [], includeArchived.value, projectDirectories.value))
     const todoStatuses = ['pending', 'completed', 'archived']
     const reports = computed(() => reportGroups(data.value?.habits.counts ?? {}))
     const trend = computed(() => dailyTrend(data.value?.habits.daily ?? {}))
@@ -89,8 +92,31 @@ export default {
       ))
     }
 
-    onMounted(load)
-    return { data, error, language, theme, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
+    let stopWatchingHash = () => {}
+    let eventSource, refreshTimer
+    const refreshOnVisible = () => { if (!document.hidden) load() }
+    onMounted(() => {
+      stopWatchingHash = watchHashView(window, (view) => {
+        activeView.value = view
+        window.scrollTo(0, 0)
+      })
+      load()
+      if (typeof EventSource === 'function') {
+        eventSource = new EventSource('/api/events')
+        eventSource.onmessage = () => {
+          clearTimeout(refreshTimer)
+          refreshTimer = setTimeout(load, 150)
+        }
+      }
+      document.addEventListener('visibilitychange', refreshOnVisible)
+    })
+    onBeforeUnmount(() => {
+      stopWatchingHash()
+      eventSource?.close()
+      clearTimeout(refreshTimer)
+      document.removeEventListener('visibilitychange', refreshOnVisible)
+    })
+    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
   },
 }
 </script>
@@ -98,11 +124,11 @@ export default {
 <template>
   <div class="app-shell" id="inicio">
     <aside class="sidebar">
-      <a class="brand" href="#inicio">Habit Memory</a>
+      <a class="brand" href="#reports">Habit Memory</a>
       <nav class="sidebar-nav" :aria-label="t('Navegación principal', 'Main navigation')">
-        <a href="#reports">{{ t('Informes', 'Reports') }}</a>
-        <a href="#checkpoints">{{ t('Puntos guardados', 'Saved checkpoints') }}</a>
-        <a href="#todos">{{ t('TODOs', 'TODOs') }}</a>
+        <a href="#reports" :aria-current="activeView === 'reports' ? 'page' : undefined">{{ t('Informes', 'Reports') }}</a>
+        <a href="#checkpoints" :aria-current="activeView === 'checkpoints' ? 'page' : undefined">{{ t('Puntos guardados', 'Saved checkpoints') }}</a>
+        <a href="#todos" :aria-current="activeView === 'todos' ? 'page' : undefined">{{ t('TODOs', 'TODOs') }}</a>
       </nav>
       <p class="local-note">{{ t('Tus datos permanecen en este equipo.', 'Your data stays on this machine.') }}</p>
     </aside>
@@ -135,14 +161,7 @@ export default {
         <p v-if="busy" role="status">{{ t('Guardando cambios…', 'Saving changes…') }}</p>
         <p v-if="!data && !error" role="status">{{ t('Leyendo la memoria local…', 'Reading local memory…') }}</p>
         <template v-if="data">
-          <section class="stat-strip" :aria-label="t('Resumen de la memoria', 'Memory overview')">
-            <article class="stat-card">
-              <span>{{ t('Puntos guardados', 'Saved checkpoints') }}</span>
-              <strong>{{ data.checkpoints.length }}</strong>
-            </article>
-          </section>
-
-          <section id="reports" aria-labelledby="reports-heading">
+          <section id="reports" v-show="activeView === 'reports'" aria-labelledby="reports-heading">
             <header class="report-heading">
               <div>
                 <h2 id="reports-heading">{{ t('Informes de actividad', 'Activity reports') }}</h2>
@@ -193,8 +212,14 @@ export default {
             </div>
           </section>
 
-          <section id="checkpoints" aria-labelledby="checkpoints-heading">
+          <section id="checkpoints" v-show="activeView === 'checkpoints'" aria-labelledby="checkpoints-heading">
             <h2 id="checkpoints-heading">{{ t('Puntos guardados', 'Saved checkpoints') }}</h2>
+            <section class="stat-strip checkpoint-summary" :aria-label="t('Resumen de la memoria', 'Memory overview')">
+              <article class="stat-card">
+                <span>{{ t('Puntos guardados', 'Saved checkpoints') }}</span>
+                <strong>{{ data.checkpoints.length }}</strong>
+              </article>
+            </section>
             <p v-if="!scopes.length">{{ t('No hay puntos guardados.', 'No checkpoints saved.') }}</p>
             <div v-else class="scope-list">
               <details v-for="scope in scopes" :key="scope.key" class="scope">
@@ -227,7 +252,7 @@ export default {
             </div>
           </section>
 
-          <section id="todos" aria-labelledby="todos-heading">
+          <section id="todos" v-show="activeView === 'todos'" aria-labelledby="todos-heading">
             <header class="report-heading todo-heading">
               <div>
                 <h2 id="todos-heading">{{ t('TODOs por proyecto', 'TODOs by project') }}</h2>
