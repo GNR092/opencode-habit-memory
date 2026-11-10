@@ -71,19 +71,13 @@ test("UI stop from another process closes the owning listener", async () => {
   await mkdir(runtime, { mode: 0o700 })
   const env = { ...process.env, HABIT_MEMORY_UI_PORT: "0", XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(home, "data") }
   const moduleUrl = new URL("../src/ui-server.js", import.meta.url).href
-  const starter = spawn(process.execPath, ["--input-type=module", "-e", `import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>console.log(s.address().port)); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "pipe", "inherit"] })
+  const portFile = join(home, "starter-port.txt")
+  const starter = spawn(process.execPath, ["--input-type=module", "-e", `import {writeFileSync} from "node:fs"; import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>writeFileSync(${JSON.stringify(portFile)}, String(s.remotePort||s.address().port)), (error)=>writeFileSync(${JSON.stringify(portFile)}, "error:"+(error?.stack||error))); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "ignore", "inherit"] })
   let stopper
   try {
-    const port = await deadline(new Promise((resolve, reject) => {
-      let output = ""
-      starter.stdout.on("data", (chunk) => {
-        output += chunk.toString()
-        const match = output.match(/(?:^|\n)(\d+)(?:\n|$)/)
-        if (match) resolve(Number(match[1]))
-      })
-      starter.once("close", (code) => reject(new Error(`starter exited ${code}`)))
-      starter.once("error", reject)
-    }), 10000, "starter startup")
+    const status = await readStatus(portFile, 10000, "starter startup")
+    assert.doesNotMatch(status, /^error:/, status)
+    const port = Number(status)
     assert.ok(port > 0)
     const descriptor = join(runtime, "habit-memory", "ui-control.json")
     await deadline((async () => { while (true) { try { await access(descriptor); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 10000, "descriptor publication")
@@ -241,15 +235,21 @@ test("concurrent UI starts converge on one listener", async () => {
   await mkdir(runtime, { mode: 0o700 })
   const env = { ...process.env, HABIT_MEMORY_UI_PORT: "0", XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(home, "data") }
   const moduleUrl = new URL("../src/ui-server.js", import.meta.url).href
-  const start = () => spawn(process.execPath, ["--input-type=module", "-e", `import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>console.log(s.remotePort||s.address().port)); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "pipe", "inherit"] })
+  const portsFile = join(home, "ports.txt")
+  const start = () => spawn(process.execPath, ["--input-type=module", "-e", `import {appendFileSync} from "node:fs"; import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>appendFileSync(${JSON.stringify(portsFile)}, String(s.remotePort||s.address().port)+"\\n"), (error)=>appendFileSync(${JSON.stringify(portsFile)}, "error:"+(error?.stack||error)+"\\n")); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "ignore", "inherit"] })
   const starters = [start(), start()]
   try {
-    const ports = await Promise.all(starters.map((child) => deadline(new Promise((resolve, reject) => {
-      let output = ""
-      child.stdout.on("data", (chunk) => { output += chunk.toString(); const match = output.match(/(?:^|\n)(\d+)(?:\n|$)/); if (match) resolve(Number(match[1])) })
-      child.once("close", (code) => { if (!/(?:^|\n)(\d+)(?:\n|$)/.test(output)) reject(new Error(`starter exited ${code}`)) })
-      child.once("error", reject)
-    }), 10000, "concurrent start")))
+    const lines = await deadline((async () => {
+      while (true) {
+        try {
+          const values = (await readFile(portsFile, "utf8")).trim().split("\n").filter(Boolean)
+          if (values.length >= 2) return values
+        } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+    })(), 10000, "concurrent ports")
+    assert.ok(lines.every((line) => /^\d+$/.test(line)), lines.join(", "))
+    const ports = lines.map(Number)
     assert.equal(ports[0], ports[1])
     await deadline((async () => { while (true) { try { await access(join(runtime, "habit-memory", "ui-control.json")); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 10000, "control publication")
   } finally {
@@ -271,6 +271,15 @@ function runStopChild(moduleUrl, env) {
 function deadline(promise, ms, label) {
   let timer
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms) })]).finally(() => clearTimeout(timer))
+}
+
+async function readStatus(path, ms, label) {
+  return deadline((async () => {
+    while (true) {
+      try { return await readFile(path, "utf8") } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  })(), ms, label)
 }
 
 async function killAndWait(child) {
