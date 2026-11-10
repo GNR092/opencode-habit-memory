@@ -76,7 +76,7 @@ function valid(data) {
   data.habits.daily = daily
   if (data.checkpoints.length > 10000 || data.checkpoints.some((c) => !c || Object.keys(c).some((k) => !["id", "project", "context", "summary", "createdAt", "sessionTitle", "projectDirectoryName"].includes(k)) || !text(c.id, 80) || !text(c.project, 128) || !text(c.context, 128) || !text(c.summary) || !text(c.createdAt, 40) || (c.sessionTitle !== undefined && !text(c.sessionTitle, 200)) || (c.projectDirectoryName !== undefined && !basenameValue(c.projectDirectoryName)))) throw new Error("Invalid checkpoint data")
   data.todos ??= []
-  if (data.todos.length > 10000 || data.todos.some((todo) => !todo || Object.keys(todo).some((k) => !["id", "project", "task", "status", "createdAt", "updatedAt"].includes(k)) || !text(todo.id, 80) || !text(todo.project, 128) || !text(todo.task) || todo.task !== todo.task.trim() || !["pending", "completed", "archived"].includes(todo.status) || !text(todo.createdAt, 40) || !text(todo.updatedAt, 40))) throw new Error("Invalid TODO data")
+  if (data.todos.length > 10000 || data.todos.some((todo) => !todo || Object.keys(todo).some((k) => !["id", "project", "task", "status", "createdAt", "updatedAt", "projectDirectoryName"].includes(k)) || !text(todo.id, 80) || !text(todo.project, 128) || !text(todo.task) || todo.task !== todo.task.trim() || !["pending", "completed", "archived"].includes(todo.status) || !text(todo.createdAt, 40) || !text(todo.updatedAt, 40) || (todo.projectDirectoryName !== undefined && !basenameValue(todo.projectDirectoryName)))) throw new Error("Invalid TODO data")
   return data
 }
 async function read() {
@@ -217,15 +217,16 @@ export async function clearCheckpoints(project, context) {
   scope(project, context)
   return locked(async () => { const data = await read(), before = data.checkpoints.length; data.checkpoints = data.checkpoints.filter((c) => c.project !== project || c.context !== context); if (before !== data.checkpoints.length) await write(data); return before - data.checkpoints.length })
 }
-export async function createTodo(project, taskValue) {
+export async function createTodo(project, taskValue, directoryNameValue) {
   if (!text(project, 128)) throw new Error("project is required (max 128 chars)")
   const task = typeof taskValue === "string" ? taskValue.trim() : ""
   if (!text(task)) throw new Error("task is required (max 240 chars)")
+  const directoryName = basenameValue(typeof directoryNameValue === "string" ? directoryNameValue.trim() : directoryNameValue)
   return locked(async () => {
     const data = await read()
     if (data.todos.length >= 10000) throw new Error("TODO limit reached")
     const now = new Date().toISOString()
-    const todo = { id: randomUUID(), project, task, status: "pending", createdAt: now, updatedAt: now }
+    const todo = { id: randomUUID(), project, task, status: "pending", createdAt: now, updatedAt: now, ...(directoryName ? { projectDirectoryName: directoryName } : {}) }
     data.todos.push(todo)
     await write(data)
     return todo

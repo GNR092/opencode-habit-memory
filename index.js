@@ -401,9 +401,10 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const project = await projectTodoProject(ctx, toolContext?.sessionID)
-          if (!project) return { content: "No se creó el TODO: no hay identidad confiable de proyecto para esta sesión." }
-          const todo = await enqueue(() => createTodo(project, input.task))
+          const identity = await projectIdentity(ctx, toolContext?.sessionID)
+          if (!identity) return { content: "No se creó el TODO: no hay identidad confiable de proyecto para esta sesión." }
+          const directory = projectDirectoryName(identity.session?.location?.directory)
+          const todo = await enqueue(() => createTodo(identity.project, input.task, directory))
           return { content: JSON.stringify(todoView(todo)) }
         },
       })

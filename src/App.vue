@@ -245,6 +245,7 @@ export default {
               <details v-for="group in todoGroups" :key="group.key" class="scope todo-project">
                 <summary class="project-summary">
                   <div class="scope-provenance">
+                    <span class="scope-caption">{{ t('Directorio', 'Directory') }} <strong class="scope-directory">{{ projectDirectoryLabel(group, language) }}</strong></span>
                     <span class="scope-caption">{{ t('Proyecto', 'Project') }} · {{ group.total }} {{ group.total === 1 ? t('tarea', 'task') : t('tareas', 'tasks') }}</span>
                     <code>{{ group.project }}</code>
                   </div>

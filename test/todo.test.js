@@ -8,7 +8,7 @@ const previousDataHome = process.env.XDG_DATA_HOME
 const testDataHome = await mkdtemp(join(tmpdir(), "habit-memory-todos-"))
 process.env.XDG_DATA_HOME = testDataHome
 const plugin = (await import("../index.js")).default
-const { storePath } = await import("../src/store.js")
+const { getData, storePath } = await import("../src/store.js")
 after(async () => {
   if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME
   else process.env.XDG_DATA_HOME = previousDataHome
@@ -23,6 +23,7 @@ test("project TODO tools resume pending work and keep updates scoped", async () 
     ["todo-completed", "project-a"],
     ["todo-other", "project-b"],
   ])
+  const directoryBySession = new Map([["todo-save", "/home/gener/projects/habit-memory"]])
   const hooks = new Map(), tools = new Map(), commands = new Map(), values = new Map()
   const ctx = {
     storage: {
@@ -36,7 +37,7 @@ test("project TODO tools resume pending work and keep updates scoped", async () 
     shell: { async hook(name, callback) { hooks.set(`shell:${name}`, callback) } },
     session: {
       async hook(name, callback) { hooks.set(`session:${name}`, callback) },
-      async get({ sessionID }) { return { projectID: projectBySession.get(sessionID) } },
+      async get({ sessionID }) { return { projectID: projectBySession.get(sessionID), location: { directory: directoryBySession.get(sessionID) } } },
       async synthetic() {},
     },
     command: {
@@ -54,6 +55,7 @@ test("project TODO tools resume pending work and keep updates scoped", async () 
 
   const created = JSON.parse((await create.execute({ task: "Implement a durable TODO" }, { sessionID: "todo-save" })).content)
   assert.equal(created.status, "pending")
+  assert.equal((await getData()).todos.find(({ id }) => id === created.id).projectDirectoryName, "habit-memory")
   assert.deepEqual(JSON.parse((await list.execute({}, { sessionID: "todo-other" })).content), [])
 
   const prompt = hooks.get("session:prompt")

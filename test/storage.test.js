@@ -210,6 +210,26 @@ test("checkpoint project directory names are optional, basename-only, and legacy
   await assert.rejects(getData(), /Invalid checkpoint data/)
 })
 
+test("TODO project directory names are optional, basename-only, and legacy-safe", async () => {
+  const legacy = { version: 1, habits: { version: 1, counts: {} }, checkpoints: [], todos: [{ id: "legacy", project: "p", task: "Legacy TODO", status: "pending", createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z" }] }
+  await mkdir(dirname(storePath), { recursive: true })
+  await writeFile(storePath, JSON.stringify(legacy))
+  assert.equal(Object.hasOwn((await getData()).todos[0], "projectDirectoryName"), false)
+
+  const named = await createTodo("p", "Named TODO", "  My Project  ")
+  assert.equal(named.projectDirectoryName, "My Project")
+
+  for (const invalid of ["/home/alice/project", "a/b", "a\\b", "x".repeat(129), " ", ".", "..", 42]) {
+    const record = await createTodo("p", "Still saved", invalid)
+    assert.equal(Object.hasOwn(record, "projectDirectoryName"), false)
+  }
+
+  const data = await getData()
+  data.todos.find(({ id }) => id === named.id).projectDirectoryName = "/home/alice/project"
+  await writeFile(storePath, JSON.stringify(data))
+  await assert.rejects(getData(), /Invalid TODO data/)
+})
+
 test("daily counters roll over in UTC and retain only the latest 365 days", async () => {
   const RealDate = globalThis.Date
   let now = "2024-01-01T00:00:00.000Z"

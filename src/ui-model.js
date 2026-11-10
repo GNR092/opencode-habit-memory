@@ -1,3 +1,8 @@
+function directoryName(value) {
+  const name = typeof value === 'string' ? value.trim() : ''
+  return name && name.length <= 128 && !/[\\/\u0000-\u001f\u007f]/.test(name) ? name : ''
+}
+
 export function groupCheckpoints(checkpoints) {
   const groups = new Map()
   const directories = new Map()
@@ -5,8 +10,8 @@ export function groupCheckpoints(checkpoints) {
     const key = item.project
     if (!groups.has(key)) groups.set(key, { key, project: item.project, items: [] })
     groups.get(key).items.push(item)
-    const name = typeof item?.projectDirectoryName === 'string' ? item.projectDirectoryName.trim() : ''
-    if (name && name.length <= 128 && !/[\\/\u0000-\u001f\u007f]/.test(name)) {
+    const name = directoryName(item?.projectDirectoryName)
+    if (name) {
       const createdAt = typeof item?.createdAt === 'string' ? item.createdAt : ''
       if (!directories.has(key) || createdAt >= directories.get(key).createdAt) directories.set(key, { name, createdAt })
     }
@@ -14,16 +19,22 @@ export function groupCheckpoints(checkpoints) {
   return [...groups.values()].map((group) => ({ ...group, directoryName: directories.get(group.key)?.name ?? '' }))
 }
 
-export function groupTodos(todos = [], includeArchived = false) {
+export function groupTodos(todos = [], includeArchived = false, directories = new Map()) {
   const groups = new Map()
+  const names = new Map()
   for (const todo of todos) {
     if (!includeArchived && todo.status === 'archived') continue
     if (!groups.has(todo.project)) groups.set(todo.project, { key: todo.project, project: todo.project, total: 0, pending: [], completed: [], archived: [] })
     const group = groups.get(todo.project)
+    const name = directoryName(todo.projectDirectoryName)
+    if (name) {
+      const createdAt = typeof todo.createdAt === 'string' ? todo.createdAt : ''
+      if (!names.has(todo.project) || createdAt >= names.get(todo.project).createdAt) names.set(todo.project, { name, createdAt })
+    }
     group[todo.status].push(todo)
     group.total++
   }
-  return [...groups.values()]
+  return [...groups.values()].map((group) => ({ ...group, directoryName: names.get(group.key)?.name ?? directories.get(group.key) ?? '' }))
 }
 
 export function projectDirectoryLabel(scope, language = 'es') {

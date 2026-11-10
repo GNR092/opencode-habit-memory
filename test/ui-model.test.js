@@ -45,6 +45,18 @@ test('TODOs group by exact project and status, hiding archived items by default'
   ])
 })
 
+test('TODO groups retain the newest project directory and accept a checkpoint fallback', () => {
+  const groups = groupTodos([
+    { id: 'old', project: 'p', task: 'Old task', status: 'pending', createdAt: '2026-01-01T00:00:00.000Z', projectDirectoryName: 'old-folder' },
+    { id: 'new', project: 'p', task: 'New task', status: 'pending', createdAt: '2026-07-01T00:00:00.000Z', projectDirectoryName: 'new-folder' },
+    { id: 'legacy', project: 'q', task: 'Legacy task', status: 'pending', createdAt: '2026-08-01T00:00:00.000Z' },
+    { id: 'invalid', project: 'q', task: 'Invalid task', status: 'pending', createdAt: '2026-09-01T00:00:00.000Z', projectDirectoryName: '/absolute/path' },
+  ], false, new Map([['q', 'fallback-folder']]))
+
+  assert.equal(groups[0].directoryName, 'new-folder')
+  assert.equal(groups[1].directoryName, 'fallback-folder')
+})
+
 test('checkpoint titles use bilingual fallback only when no valid title exists', () => {
   assert.equal(checkpointTitle({ summary: 'legacy' }, 'es'), 'Título no disponible')
   assert.equal(checkpointTitle({ sessionTitle: '  ' }, 'en'), 'Title unavailable')
