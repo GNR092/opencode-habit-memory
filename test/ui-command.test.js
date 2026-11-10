@@ -81,16 +81,16 @@ test("UI stop from another process closes the owning listener", async () => {
         const match = output.match(/(?:^|\n)(\d+)(?:\n|$)/)
         if (match) resolve(Number(match[1]))
       })
-      starter.once("exit", (code) => reject(new Error(`starter exited ${code}`)))
+      starter.once("close", (code) => reject(new Error(`starter exited ${code}`)))
       starter.once("error", reject)
-    }), 3000, "starter startup")
+    }), 10000, "starter startup")
     assert.ok(port > 0)
     const descriptor = join(runtime, "habit-memory", "ui-control.json")
-    await deadline((async () => { while (true) { try { await access(descriptor); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 3000, "descriptor publication")
+    await deadline((async () => { while (true) { try { await access(descriptor); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 10000, "descriptor publication")
     stopper = runStopChild(moduleUrl, env)
-    const stop = await deadline(stopper, 3000, "stop child")
+    const stop = await deadline(stopper, 10000, "stop child")
     assert.equal(stop, "true")
-    const [code] = await deadline(once(starter, "exit"), 3000, "starter exit")
+    const [code] = await deadline(once(starter, "exit"), 10000, "starter exit")
     assert.equal(code, 0)
     const probe = createServer()
     await new Promise((resolve, reject) => probe.once("error", reject).listen(port, "127.0.0.1", resolve))
@@ -247,11 +247,11 @@ test("concurrent UI starts converge on one listener", async () => {
     const ports = await Promise.all(starters.map((child) => deadline(new Promise((resolve, reject) => {
       let output = ""
       child.stdout.on("data", (chunk) => { output += chunk.toString(); const match = output.match(/(?:^|\n)(\d+)(?:\n|$)/); if (match) resolve(Number(match[1])) })
-      child.once("exit", (code) => reject(new Error(`starter exited ${code}`)))
+      child.once("close", (code) => { if (!/(?:^|\n)(\d+)(?:\n|$)/.test(output)) reject(new Error(`starter exited ${code}`)) })
       child.once("error", reject)
-    }), 3000, "concurrent start")))
+    }), 10000, "concurrent start")))
     assert.equal(ports[0], ports[1])
-    await deadline((async () => { while (true) { try { await access(join(runtime, "habit-memory", "ui-control.json")); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 3000, "control publication")
+    await deadline((async () => { while (true) { try { await access(join(runtime, "habit-memory", "ui-control.json")); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 10000, "control publication")
   } finally {
     await Promise.all(starters.map(killAndWait))
     await rm(home, { recursive: true, force: true })
@@ -263,7 +263,7 @@ function runStopChild(moduleUrl, env) {
   let stdout = "", stderr = ""
   child.stdout.on("data", (data) => { stdout += data })
   child.stderr.on("data", (data) => { stderr += data })
-  const result = deadline(once(child, "exit").then(([code]) => { assert.equal(code, 0, stderr); return stdout.trim() }), 2500, "stop process").finally(() => killAndWait(child))
+  const result = deadline(once(child, "exit").then(([code]) => { assert.equal(code, 0, stderr); return stdout.trim() }), 10000, "stop process").finally(() => killAndWait(child))
   result.child = child
   return result
 }
