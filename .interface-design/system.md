@@ -2,29 +2,30 @@
 
 ## Intención y firma
 
-Consola privada de observabilidad para quien abre la herramienta entre tareas y necesita identificar patrones, ámbitos y checkpoints, y editar o borrar datos con seguridad. Debe sentirse precisa, sobria y compacta; no es un dashboard financiero. La firma son las filas de procedencia: cada checkpoint queda anclado al par real **Proyecto / Contexto**, y cada grupo de hábitos conserva su origen (**solicitudes explícitas** frente a **actividad de agentes · señal débil**).
+Consola privada de observabilidad para quien abre la herramienta entre tareas y necesita identificar patrones, ámbitos y checkpoints, y editar o borrar datos con seguridad. Debe sentirse precisa, sobria y compacta; no es un dashboard financiero. La firma son las filas de procedencia: cada renglón de hábito conserva su señal (**solicitud explícita** o **uso observado**) y su clave original, y cada checkpoint queda anclado a su **Proyecto** y **Contexto** dentro de un grupo identificado por **Directorio / Proyecto**.
 
 ## Dirección visual
 
-- Tema oscuro es el predeterminado; tema claro queda disponible manualmente. Tokens fuente en `src/ui.css`: canvas `#0b1119`, superficie `#101923`, superficie elevada `#141f2b`, tinta `#dce6ed`, teal `#59d6c8`; rojo `#ed8589` solo para acciones destructivas. El claro define su propia pareja de tokens semánticos. Neutros secundarios, líneas y bordes derivan de tinta/superficie con `color-mix`.
-- Profundidad por cambios mínimos de superficie y bordes finos, sin sombras dramáticas. Los contornos se mantienen discretos; teal indica foco, interacción y señal del producto, no decoración.
-- Tipografía `system-ui` local para lectura compacta; `ui-monospace` para IDs y valores técnicos alineados. No cargar fuentes remotas ni dependencias.
-- Ritmo en múltiplos de 4/8px, radios contenidos y cifras tabulares. Jerarquía de terminal: metadatos pequeños, encabezados precisos y densidad sin sacrificar legibilidad.
-- Desktop: rail lateral del mismo canvas, dividido por una línea; contenido en canvas. Mobile: marca y anclas segmentadas en una cabecera compacta sin tapar contenido.
-- Español es el idioma inicial; selector manual ES/EN. Solo traduce la interfaz, nunca los datos guardados.
+- Tema oscuro por defecto y claro manual, alternados con el botón del masthead. Tokens en `src/ui.css` bajo `:root` y `:root[data-theme="light"]`. Oscuro: canvas `#0b1119`, superficie `#101923`, elevada `#141f2b`, tinta `#dce6ed`, secundario `#91a2b1`, teal `#59d6c8`, rojo `#ed8589`, serie de comandos `#b69af7`. Claro: canvas `#f2f6f8`, superficie `#ffffff`, elevada `#e8eff2`, tinta `#172733`, secundario `#536a78`, teal `#087d75`, rojo `#a8323c`, serie de comandos `#6045a8`. Líneas y bordes derivan de la tinta con `color-mix` (12/7 % en oscuro, 17/10 % en claro).
+- Profundidad solo por superficie y bordes de 1px, sin sombras. Teal indica foco, interacción y señal del producto; rojo queda para acciones destructivas; el morado distingue la segunda serie de la tendencia. Nada de ello es decoración.
+- Tipografía base `14px/1.5 system-ui`; `ui-monospace` para IDs, claves y valores técnicos; cifras tabulares en conteos y totales.
+- Espaciado compacto en rem, radios de `.25–.45rem` y encabezados con tracking negativo. Jerarquía de terminal: metadatos pequeños, encabezados precisos y densidad sin sacrificar legibilidad.
+- Desktop (`≥45rem`): rail fijo de `13.5rem` del mismo canvas separado por borde derecho, con marca, navegación vertical y nota local al pie; contenido hasta `88rem`. Mobile: cabecera compacta con marca, navegación en tres columnas y nota local. El masthead agrupa eyebrow, título, intro y controles de idioma y tema.
+- Español es el idioma inicial; selector manual ES/EN y botón de tema en el masthead. Solo se traduce la interfaz, nunca los datos guardados.
 
 ## Patrones de información
 
-- Navegación por anclas a **Patrones**, **Informes**, **Puntos guardados** y **TODOs**, con indicador explícito de almacenamiento local.
-- Los informes agrupan y ordenan conteos existentes por **Herramientas**, **Comandos** y **Actividad de agentes · señal débil**. Conservar en cada renglón la clave/señal original para distinguir solicitudes explícitas del uso observado.
-- La tendencia es una gráfica SVG nativa de conteos allowlisted por día UTC, con historial móvil de 365 días. Debe indicar que empieza con la instrumentación nueva, sin fechas ni actividad fabricadas para los conteos legacy.
+- Navegación por vistas SPA mediante hash —**Informes**, **Puntos guardados** y **TODOs**— con direct links, historial atrás/adelante, `aria-current` y nota explícita de almacenamiento local; solo la vista activa muestra su contenido.
+- La WebUI se suscribe a `/api/events` por SSE y refresca los datos al cambiar el store local, sin recargar; al recuperar la visibilidad revalida por si la conexión se perdió.
+- Los informes presentan dos tarjetas, **Herramientas** y **Comandos**, con total teal y ranking descendente. Cada renglón rotula su señal (**solicitud explícita** / **uso observado**), su tipo y nombre, y conserva la clave original en mono.
+- La tendencia es una gráfica SVG nativa de barras agrupadas por día UTC, con ventana móvil de 365 días y series teal (herramientas) y morada (comandos). Incluye leyenda, título y descripción, y declara que empieza con la instrumentación nueva, sin fechas ni actividad fabricadas para los conteos legacy.
 - El borrado de hábitos agregados se ofrece solo en la WebUI, como acción destructiva roja y confirmada; elimina acumulados y tendencia, pero no checkpoints.
-- Separar **Solicitudes explícitas** de **Actividad de agentes · señal débil**, mostrando otras categorías solo si existen; no atribuir actividad observada como preferencia explícita.
-- Cada ámbito conserva cantidad real, **Proyecto**, **Contexto**, resumen, fecha y acciones. Agrupar exclusivamente por el par real `(proyecto, contexto)`; no limitar ni fusionar ámbitos.
-- Mantener edición, confirmaciones de borrado, estados de error/carga y acceso por teclado. Destructivo es rojo, distinto de la acción/foco teal y rotulado además de su color.
+- Los puntos guardados se agrupan por proyecto. El resumen de cada grupo muestra **Directorio**, **Proyecto** y cantidad real; cada entrada conserva título de sesión, resumen, **Contexto**, fecha y acciones de editar/eliminar. La lista no se limita ni se recorta.
+- Los TODOs se agrupan por proyecto y estado —pendientes, completados y archivados—, muestran el **Directorio** del proyecto cuando se conoce y ofrecen casilla para incluir archivados.
+- Mantener edición, confirmaciones de borrado, estados de error/carga/guardado y acceso por teclado. Destructivo es rojo, distinto de la acción/foco teal y rotulado además de su color.
 
 ## Accesibilidad y límites
 
-- Estructura semántica, controles etiquetados, foco visible, contraste AA, idioma del documento sincronizado y movimiento reducido; el gráfico ofrece título, descripción, leyenda y etiquetas textuales.
+- Estructura semántica, controles etiquetados, foco visible de 2px, contraste AA, idioma del documento sincronizado y movimiento reducido; el gráfico ofrece título, descripción, leyenda y tooltip por barra.
 - No añadir dependencias, CDN, datos sintéticos, charts falsos, marca/terminología financiera ni iconografía decorativa. Las tendencias nunca contienen eventos raw, prompts, comandos literales o conversaciones.
-- Componentes y breakpoints implementados: `src/App.vue` y `src/ui.css`.
+- Breakpoints de `45rem` y `68rem` y componentes implementados en `src/App.vue`, `src/ui-model.js` y `src/ui.css`.
