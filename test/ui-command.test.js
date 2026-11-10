@@ -259,11 +259,11 @@ test("concurrent UI starts converge on one listener", async () => {
 })
 
 function runStopChild(moduleUrl, env) {
-  const child = spawn(process.execPath, ["--input-type=module", "-e", `import {stopUiServer} from ${JSON.stringify(moduleUrl)}; console.log(await stopUiServer())`], { env, stdio: ["ignore", "pipe", "pipe"] })
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `import {stopUiServer} from ${JSON.stringify(moduleUrl)}; process.stdout.write(String(await stopUiServer()))`], { env, stdio: ["ignore", "pipe", "pipe"] })
   let stdout = "", stderr = ""
   child.stdout.on("data", (data) => { stdout += data })
   child.stderr.on("data", (data) => { stderr += data })
-  const result = deadline(once(child, "exit").then(([code]) => { assert.equal(code, 0, stderr); return stdout.trim() }), 10000, "stop process").finally(() => killAndWait(child))
+  const result = deadline(once(child, "exit").then(([code]) => { assert.equal(code, 0, stderr); return stdout.replace(/\x1B\[[0-9;]*m/g, "").trim() }), 10000, "stop process").finally(() => killAndWait(child))
   result.child = child
   return result
 }
