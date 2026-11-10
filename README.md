@@ -4,18 +4,34 @@ Plugin local de OpenCode para guardar hábitos agregados, checkpoints y TODOs vi
 
 ## Instalación
 
-Requiere Node.js 20 o posterior. Desde el directorio del proyecto:
+### Desde npm
+
+Añade el paquete a `plugins` en la configuración global de OpenCode (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "plugins": ["opencode-global-habit-profile"]
+}
+```
+
+OpenCode lo carga desde npm; no hace falta clonar ni compilar. Si la configuración no se recarga sola, ejecuta `/reload`.
+
+### Desde el repositorio
+
+Requiere Node.js 20 o posterior. Clona el repositorio y compila la WebUI:
 
 ```sh
+git clone git@github.com:GNR092/opencode-habit-memory.git
+cd opencode-habit-memory
 npm ci
 npm run build
 ```
 
-Añade la ruta del proyecto a `plugins` en la configuración de OpenCode:
+Añade la ruta absoluta del proyecto a `plugins`:
 
 ```json
 {
-  "plugins": ["/ruta/absoluta/al/habit-memory-plugin"]
+  "plugins": ["/ruta/absoluta/al/opencode-habit-memory"]
 }
 ```
 
@@ -30,6 +46,15 @@ npm run ui
 ```
 
 El puerto predeterminado es `43109`; se puede cambiar con `HABIT_MEMORY_UI_PORT`.
+
+## Publicación
+
+```sh
+npm login
+npm publish
+```
+
+`prepublishOnly` ejecuta las pruebas y el build. El paquete incluye `dist/`, así que quien lo instala desde npm no necesita compilar.
 
 ## Pruebas
 

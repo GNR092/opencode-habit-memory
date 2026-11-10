@@ -1,26 +1,52 @@
 {
   "name": "opencode-global-habit-profile",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Plugin de OpenCode para hábitos agregados, checkpoints y TODOs por proyecto.",
+  "license": "UNLICENSED",
   "type": "module",
   "main": "index.js",
   "exports": "./index.js",
   "bin": {
     "habit-memory-mcp": "src/mcp.js"
   },
+  "files": [
+    "index.js",
+    "src",
+    "dist",
+    "docs",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GNR092/opencode-habit-memory.git"
+  },
+  "homepage": "https://github.com/GNR092/opencode-habit-memory#readme",
+  "bugs": {
+    "url": "https://github.com/GNR092/opencode-habit-memory/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "habits",
+    "checkpoints",
+    "todos"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "mcp": "node src/mcp.js",
     "ui": "node src/ui-server.js",
     "test": "node --test",
-    "build": "vite build"
+    "build": "vite build",
+    "prepublishOnly": "npm test && npm run build"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "vue": "^3.5.45"
-  },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
-    "vite": "^6.4.5"
+    "vite": "^6.4.5",
+    "vue": "^3.5.45"
   }
 }
