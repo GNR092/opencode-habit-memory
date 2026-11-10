@@ -63,3 +63,7 @@ npm test
 ```
 
 Para configurar el servidor MCP local en clientes compatibles, consulta [`docs/mcp-setup.md`](docs/mcp-setup.md).
+
+## Licencia
+
+MIT. Consulta [`LICENSE`](LICENSE).

@@ -2,7 +2,7 @@
   "name": "opencode-global-habit-profile",
   "version": "0.1.0",
   "description": "Plugin de OpenCode para hábitos agregados, checkpoints y TODOs por proyecto.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
   "exports": "./index.js",
@@ -14,7 +14,8 @@
     "src",
     "dist",
     "docs",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
