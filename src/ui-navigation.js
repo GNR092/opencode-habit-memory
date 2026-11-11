@@ -1,4 +1,4 @@
-export const viewIds = Object.freeze(['reports', 'checkpoints', 'todos'])
+export const viewIds = Object.freeze(['reports', 'checkpoints', 'todos', 'metrics'])
 
 export function viewFromHash(hash) {
   const view = hash.startsWith('#') ? hash.slice(1) : hash

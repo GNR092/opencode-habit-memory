@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
 import { createServer, request as httpRequest } from "node:http"
 import { clearCheckpoints, clearHabits, deleteCheckpoint, getData, storePath, updateCheckpoint } from "./store.js"
+import { metricsPath, queryMetrics } from "./metrics.js"
+import { pluginSnapshot, recordRequestStatus, recordServerError, recordSseClient, recordSseRefresh } from "./plugin-stats.js"
 
 const maxBody = 8192
 const distPath = join(fileURLToPath(new URL("../dist/", import.meta.url)))
@@ -16,19 +18,20 @@ export function createUiServer({ port = 0 } = {}) {
   let watcher, refreshTimer
   const server = createServer(async (req, res) => {
     const host = req.headers.host
-    if (![ `127.0.0.1:${server.address()?.port}`, `localhost:${server.address()?.port}` ].includes(host)) { res.writeHead(403).end("Forbidden"); return }
+    if (![ `127.0.0.1:${server.address()?.port}`, `localhost:${server.address()?.port}` ].includes(host)) { recordRequestStatus(403); res.writeHead(403).end("Forbidden"); return }
     const method = req.method || "GET", url = new URL(req.url || "/", `http://${host}`)
     if (url.pathname === controlPath) {
       const supplied = req.headers["x-habit-token"]
       const authorized = ["GET", "POST"].includes(method) && req.headers.origin === `http://${host}` && typeof supplied === "string" && Buffer.byteLength(supplied) === Buffer.byteLength(token) && timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
-      if (!authorized) { res.writeHead(403).end(); return }
+      if (!authorized) { recordRequestStatus(403); res.writeHead(403).end(); return }
+      recordRequestStatus(200)
       if (method === "GET") { res.writeHead(200, { "cache-control": "no-store" }).end("active"); return }
       res.writeHead(200, { "cache-control": "no-store" }).end("stopping")
       setImmediate(() => { server.closeStreams(); server.close() })
       return
     }
     const securityHeaders = { "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", "referrer-policy": "no-referrer" }
-    const send = (status, payload, type = "application/json; charset=utf-8") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...securityHeaders }); res.end(payload) }
+    const send = (status, payload, type = "application/json; charset=utf-8") => { recordRequestStatus(status); res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...securityHeaders }); res.end(payload) }
     if (method === "GET" && url.pathname === "/") {
       try { const html = (await readFile(join(distPath, "index.html"), "utf8")).replace("<head>", `<head><meta name="habit-token" content="${token}">`); send(200, html, "text/html; charset=utf-8") }
       catch { send(503, "WebUI assets are missing (dist/index.html was not found). Run `npm run build` from the plugin directory to generate `dist/`.", "text/plain; charset=utf-8") }
@@ -45,16 +48,36 @@ export function createUiServer({ port = 0 } = {}) {
       catch { send(500, JSON.stringify({ error: "Unable to read local memory" })) }
       return
     }
+    if (method === "GET" && url.pathname === "/api/metrics") {
+      try {
+        const filters = {}
+        for (const key of ["from", "to", "project", "agent", "provider", "model", "kind"]) {
+          const value = url.searchParams.get(key)
+          if (value !== null && value !== "") filters[key] = value
+        }
+        let storeData
+        try { storeData = await getData() } catch {}
+        const result = queryMetrics(filters)
+        result.plugin = pluginSnapshot({ storeData, storePath, metricsPath })
+        send(200, JSON.stringify(result))
+      } catch (error) {
+        const invalid = error?.code === "INVALID_METRICS_QUERY"
+        send(invalid ? 400 : 500, JSON.stringify({ error: invalid ? "Invalid metrics query" : "Unable to read metrics" }))
+      }
+      return
+    }
     if (method === "GET" && url.pathname === "/api/events") {
+      recordRequestStatus(200)
       res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", ...securityHeaders })
       res.write(": connected\n\n")
       clients.add(res)
+      recordSseClient(1)
       const heartbeat = setInterval(() => {
         if (res.writableEnded) return
         try { res.write(": ping\n\n") } catch { res.end() }
       }, 30_000)
       heartbeat.unref?.()
-      res.on("close", () => { clearInterval(heartbeat); clients.delete(res) })
+      res.on("close", () => { clearInterval(heartbeat); if (clients.delete(res)) recordSseClient(-1) })
       return
     }
     if (method !== "POST" || !["/api/checkpoint/edit", "/api/checkpoint/delete", "/api/scope/delete", "/api/habits/clear"].includes(url.pathname)) { send(404, JSON.stringify({ error: "Not found" })); return }
@@ -78,25 +101,29 @@ export function createUiServer({ port = 0 } = {}) {
       send(changed ? 200 : 404, JSON.stringify({ changed }))
     } catch { send(400, JSON.stringify({ error: "Invalid request" })) }
   })
-  server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
+  server.on("clientError", (_error, socket) => { recordRequestStatus(400); socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n") })
   try {
     const directory = dirname(storePath)
+    const metricsName = basename(metricsPath)
+    // -shm is excluded: read-only metrics queries update it and would self-trigger SSE.
+    const watched = new Set([basename(storePath), metricsName, `${metricsName}-wal`])
     mkdirSync(directory, { recursive: true, mode: 0o700 })
     watcher = watch(directory, (_event, filename) => {
-      if (filename && filename !== basename(storePath)) return
+      if (filename && !watched.has(filename)) return
       if (refreshTimer) return
       refreshTimer = setTimeout(() => {
         refreshTimer = undefined
+        if (clients.size) recordSseRefresh()
         for (const client of clients) {
-          if (client.writableEnded) { clients.delete(client); continue }
-          try { client.write("data: refresh\n\n") } catch { clients.delete(client) }
+          if (client.writableEnded) { if (clients.delete(client)) recordSseClient(-1); continue }
+          try { client.write("data: refresh\n\n") } catch { if (clients.delete(client)) recordSseClient(-1); recordServerError() }
         }
       }, 100)
     })
     watcher.unref?.()
     watcher.on("error", () => { watcher?.close(); watcher = undefined })
   } catch {}
-  server.closeStreams = () => { for (const client of clients) { try { client.end() } catch {} } clients.clear() }
+  server.closeStreams = () => { const count = clients.size; for (const client of clients) { try { client.end() } catch {} } clients.clear(); if (count) recordSseClient(-count) }
   server.on("close", () => { clearTimeout(refreshTimer); watcher?.close(); server.closeStreams() })
   server.habitToken = token
   return server.listen(port, "127.0.0.1")

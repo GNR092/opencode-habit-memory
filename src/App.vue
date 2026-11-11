@@ -1,6 +1,6 @@
 <script>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, projectDirectoryLabel, reportGroups, trendBars } from './ui-model.js'
+import { checkpointTitle, costLine, dailyTrend, groupCheckpoints, groupTodos, metricsRange, projectDirectoryLabel, reportGroups, tokenBars, trendBars } from './ui-model.js'
 import { viewFromHash, watchHashView } from './ui-navigation.js'
 
 export default {
@@ -12,8 +12,113 @@ export default {
     const activeView = ref(viewFromHash(window.location.hash))
     const busy = ref(false)
     const includeArchived = ref(false)
+    const metrics = ref(null)
+    const metricsError = ref('')
+    const metricsLoading = ref(false)
+    const rangeDays = ref(30)
+    const metricProject = ref('')
+    const metricAgent = ref('')
+    const metricProvider = ref('')
+    const metricModel = ref('')
+    const metricOptions = ref({ projects: [], agents: [], providers: [], models: [] })
     const token = document.querySelector('meta[name="habit-token"]')?.content
     const t = (es, en) => language.value === 'es' ? es : en
+    const numberFormat = computed(() => new Intl.NumberFormat(language.value, { maximumFractionDigits: 0 }))
+    const decimalFormat = computed(() => new Intl.NumberFormat(language.value, { maximumFractionDigits: 1 }))
+    const compactFormat = computed(() => new Intl.NumberFormat(language.value, { notation: 'compact', maximumFractionDigits: 1 }))
+    const percentFormat = computed(() => new Intl.NumberFormat(language.value, { style: 'percent', maximumFractionDigits: 1 }))
+    const currencyFormat = computed(() => new Intl.NumberFormat(language.value, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }))
+    const formatNumber = (value) => numberFormat.value.format(Number(value) || 0)
+    const formatCompact = (value) => compactFormat.value.format(Number(value) || 0)
+    const formatPercent = (value) => percentFormat.value.format(Number(value) || 0)
+    const formatCost = (value) => currencyFormat.value.format(Number(value) || 0)
+    const reportedCost = (row) => Number(row?.costCoverage) > 0 ? formatCost(row.cost) : '—'
+    const coverageText = (row) => `${formatPercent(row?.costCoverage ?? 0)} · ${formatNumber(row?.pricedSteps ?? 0)}/${formatNumber(row?.steps ?? 0)} ${t('pasos', 'steps')}`
+    const tokenBreakdown = (row) => {
+      const tokens = row?.tokens ?? {}
+      return [
+        `${t('entrada', 'input')} ${formatCompact(tokens.input)}`,
+        `${t('caché', 'cache')} ${formatCompact(tokens.cacheRead)}`,
+        `${t('salida', 'output')} ${formatCompact(tokens.output)}`,
+        `${t('raz.', 'reason.')} ${formatCompact(tokens.reasoning)}`,
+      ].join(' · ')
+    }
+    const seriesLabel = (key) => ({
+      input: t('Entrada sin caché', 'Uncached input'),
+      cache: t('Caché leída', 'Cache read'),
+      output: t('Salida', 'Output'),
+    }[key] ?? key)
+    const metricKindLabel = (kind) => ({
+      primary: t('Principal', 'Primary'),
+      subagent: t('Subagente', 'Subagent'),
+      title: t('Título', 'Title'),
+      compaction: t('Compactación', 'Compaction'),
+      generate: t('Generación', 'Generate'),
+      other: t('Otro', 'Other'),
+    }[kind] ?? kind)
+    const projectOptionLabel = (project) => project.directory || project.key
+    const metricsEmpty = computed(() => Boolean(metrics.value) && metrics.value.totals?.steps === 0)
+    const hasMetricFilters = computed(() => Boolean(metricProject.value || metricAgent.value || metricProvider.value || metricModel.value))
+    const tokenChart = computed(() => tokenBars(metrics.value?.series ?? []))
+    const costChart = computed(() => costLine(metrics.value?.series ?? []))
+    const firstMetricDay = computed(() => metrics.value?.series?.[0]?.day ?? '')
+    const lastMetricDay = computed(() => metrics.value?.series?.at(-1)?.day ?? '')
+    const cacheDenominator = computed(() => {
+      const tokens = metrics.value?.totals?.tokens
+      return tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : 0
+    })
+    const plugin = computed(() => metrics.value?.plugin ?? null)
+    const pluginHooks = computed(() => Object.entries(plugin.value?.hooks ?? {}).map(([name, hook]) => ({
+      name,
+      invocations: Number(hook?.invocations) || 0,
+      errors: Number(hook?.errors) || 0,
+      p50: hook?.latency?.p50 ?? null,
+      p95: hook?.latency?.p95 ?? null,
+    })))
+    const pluginErrors = computed(() => ["hooks", "store", "server", "collector"].map((key) => ({ key, count: Number(plugin.value?.errors?.[key]) || 0 })))
+    const pluginHookCalls = computed(() => pluginHooks.value.reduce((sum, hook) => sum + hook.invocations, 0))
+    const pluginHookErrors = computed(() => pluginHooks.value.reduce((sum, hook) => sum + hook.errors, 0))
+    const pluginErrorTotal = computed(() => pluginErrors.value.reduce((sum, error) => sum + error.count, 0))
+    const pluginCurrent = computed(() => plugin.value?.current ?? null)
+    const pluginEmpty = computed(() => {
+      const value = plugin.value
+      if (!value) return true
+      const hooks = Object.values(value.hooks ?? {}).some((hook) => (Number(hook?.invocations) || 0) > 0 || (Number(hook?.errors) || 0) > 0)
+      const storage = (Number(value.store?.reads) || 0) + (Number(value.store?.writes) || 0) + (Number(value.store?.errors) || 0)
+      const sse = (Number(value.sse?.clients) || 0) + (Number(value.sse?.peakClients) || 0) + (Number(value.sse?.refreshes) || 0)
+      const requests = ["2xx", "4xx", "5xx"].some((key) => (Number(value.requests?.[key]) || 0) > 0)
+      const context = (Number(value.context?.injections) || 0) + (Number(value.context?.injectedChars) || 0) + (Number(value.context?.notices?.checkpoint) || 0) + (Number(value.context?.notices?.todo) || 0)
+      const current = value.current && Object.values(value.current).some((count) => (Number(count) || 0) > 0)
+      const errors = (Number(value.errors?.hooks) || 0) + (Number(value.errors?.store) || 0) + (Number(value.errors?.server) || 0) + (Number(value.errors?.collector) || 0)
+      const flush = (Number(value.flush?.failures) || 0) + (Number(value.flush?.pending) || 0)
+      return !hooks && !storage && !sse && !requests && !context && !current && !errors && !flush
+    })
+    const formatMillis = (value) => value === null || value === undefined ? '—' : `${formatNumber(value)} ms`
+    const formatBytes = (value) => {
+      if (value === null || value === undefined) return '—'
+      const bytes = Number(value)
+      if (!Number.isFinite(bytes) || bytes < 0) return '—'
+      if (bytes < 1024) return `${formatNumber(bytes)} B`
+      if (bytes < 1024 * 1024) return `${decimalFormat.value.format(bytes / 1024)} KB`
+      return `${decimalFormat.value.format(bytes / (1024 * 1024))} MB`
+    }
+    const formatTime = (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return Number.isFinite(date.getTime()) ? date.toLocaleTimeString(language.value) : '—'
+    }
+    const pluginHookLabel = (name) => ({
+      "session.prompt": t('Prompt de sesión', 'Session prompt'),
+      "session.context": t('Contexto de sesión', 'Session context'),
+      "tool.execute.after": t('Después de herramienta', 'After tool'),
+      "shell.create.before": t('Antes de shell', 'Before shell'),
+    }[name] ?? name)
+    const pluginErrorLabel = (key) => ({
+      hooks: t('Hooks', 'Hooks'),
+      store: t('Almacenamiento', 'Storage'),
+      server: t('Servidor', 'Server'),
+      collector: t('Colector', 'Collector'),
+    }[key] ?? key)
     const scopes = computed(() => groupCheckpoints(data.value?.checkpoints ?? []))
     const projectDirectories = computed(() => new Map(scopes.value.map(({ project, directoryName }) => [project, directoryName])))
     const todoGroups = computed(() => groupTodos(data.value?.todos ?? [], includeArchived.value, projectDirectories.value))
@@ -41,6 +146,7 @@ export default {
 
     watch(language, (value) => { document.documentElement.lang = value })
     watch(theme, (value) => { document.documentElement.dataset.theme = value }, { immediate: true })
+    watch([rangeDays, metricProject, metricAgent, metricProvider, metricModel], loadMetrics)
 
     async function request(path, body) {
       const response = await fetch(path, {
@@ -55,6 +161,56 @@ export default {
 
     async function load() {
       try { data.value = await request('/api/data'); error.value = '' } catch (e) { error.value = e.message }
+    }
+
+    function mergeMetricOptions(result) {
+      const current = metricOptions.value
+      const projects = new Map(current.projects.map((project) => [project.key, project]))
+      for (const row of result?.byProject ?? []) if (row?.key) projects.set(row.key, { key: row.key, directory: row.directory || '' })
+      const agents = new Set(current.agents)
+      for (const row of result?.byAgent ?? []) if (row?.key) agents.add(row.key)
+      const providers = new Set(current.providers)
+      const models = new Set(current.models)
+      for (const row of result?.byModel ?? []) {
+        if (row?.key) models.add(row.key)
+        if (row?.provider) providers.add(row.provider)
+      }
+      metricOptions.value = {
+        projects: [...projects.values()].sort((a, b) => (a.directory || a.key).localeCompare(b.directory || b.key)),
+        agents: [...agents].sort((a, b) => a.localeCompare(b)),
+        providers: [...providers].sort((a, b) => a.localeCompare(b)),
+        models: [...models].sort((a, b) => a.localeCompare(b)),
+      }
+    }
+
+    let metricsRequest = 0
+    async function loadMetrics() {
+      const requestId = ++metricsRequest
+      metricsLoading.value = true
+      metricsError.value = ''
+      try {
+        const { from, to } = metricsRange(rangeDays.value)
+        const params = new URLSearchParams({ from, to })
+        if (metricProject.value) params.set('project', metricProject.value)
+        if (metricAgent.value) params.set('agent', metricAgent.value)
+        if (metricProvider.value) params.set('provider', metricProvider.value)
+        if (metricModel.value) params.set('model', metricModel.value)
+        const result = await request(`/api/metrics?${params}`)
+        if (requestId !== metricsRequest) return
+        metrics.value = result
+        mergeMetricOptions(result)
+      } catch (e) {
+        if (requestId === metricsRequest) metricsError.value = e.message
+      } finally {
+        if (requestId === metricsRequest) metricsLoading.value = false
+      }
+    }
+
+    function clearMetricFilters() {
+      metricProject.value = ''
+      metricAgent.value = ''
+      metricProvider.value = ''
+      metricModel.value = ''
     }
 
     async function mutate(path, body, confirmText) {
@@ -94,18 +250,19 @@ export default {
 
     let stopWatchingHash = () => {}
     let eventSource, refreshTimer
-    const refreshOnVisible = () => { if (!document.hidden) load() }
+    const refreshOnVisible = () => { if (!document.hidden) { load(); loadMetrics() } }
     onMounted(() => {
       stopWatchingHash = watchHashView(window, (view) => {
         activeView.value = view
         window.scrollTo(0, 0)
       })
       load()
+      loadMetrics()
       if (typeof EventSource === 'function') {
         eventSource = new EventSource('/api/events')
         eventSource.onmessage = () => {
           clearTimeout(refreshTimer)
-          refreshTimer = setTimeout(load, 150)
+          refreshTimer = setTimeout(() => { load(); loadMetrics() }, 150)
         }
       }
       document.addEventListener('visibilitychange', refreshOnVisible)
@@ -114,9 +271,10 @@ export default {
       stopWatchingHash()
       eventSource?.close()
       clearTimeout(refreshTimer)
+      metricsRequest++
       document.removeEventListener('visibilitychange', refreshOnVisible)
     })
-    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits }
+    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits, metrics, metricsError, metricsLoading, rangeDays, metricProject, metricAgent, metricProvider, metricModel, metricOptions, metricsEmpty, hasMetricFilters, tokenChart, costChart, firstMetricDay, lastMetricDay, cacheDenominator, formatNumber, formatCompact, formatPercent, formatCost, reportedCost, coverageText, tokenBreakdown, seriesLabel, metricKindLabel, projectOptionLabel, clearMetricFilters, loadMetrics, plugin, pluginHooks, pluginErrors, pluginHookCalls, pluginHookErrors, pluginErrorTotal, pluginCurrent, pluginEmpty, formatMillis, formatBytes, formatTime, pluginHookLabel, pluginErrorLabel }
   },
 }
 </script>
@@ -129,6 +287,7 @@ export default {
         <a href="#reports" :aria-current="activeView === 'reports' ? 'page' : undefined">{{ t('Informes', 'Reports') }}</a>
         <a href="#checkpoints" :aria-current="activeView === 'checkpoints' ? 'page' : undefined">{{ t('Puntos guardados', 'Saved checkpoints') }}</a>
         <a href="#todos" :aria-current="activeView === 'todos' ? 'page' : undefined">{{ t('TODOs', 'TODOs') }}</a>
+        <a href="#metrics" :aria-current="activeView === 'metrics' ? 'page' : undefined">{{ t('Métricas', 'Metrics') }}</a>
       </nav>
       <p class="local-note">{{ t('Tus datos permanecen en este equipo.', 'Your data stays on this machine.') }}</p>
     </aside>
@@ -138,7 +297,7 @@ export default {
         <div>
           <p class="eyebrow">{{ t('MEMORIA DE TRABAJO', 'WORKING MEMORY') }}</p>
           <h1>{{ t('Tu memoria de trabajo.', 'Your working memory.') }}</h1>
-          <p class="intro">{{ t('Hábitos, puntos guardados y TODOs de este equipo.', 'Stored habits, checkpoints, and TODOs on this machine.') }}</p>
+          <p class="intro">{{ t('Hábitos, puntos guardados, TODOs y métricas de uso de este equipo.', 'Stored habits, checkpoints, TODOs, and usage metrics on this machine.') }}</p>
         </div>
         <div class="masthead-controls">
           <label class="language"><span>{{ t('Idioma', 'Language') }}</span>
@@ -156,7 +315,7 @@ export default {
       </header>
 
       <main>
-        <p class="page-note">{{ t('Este índice contiene resúmenes, hábitos agregados y TODOs persistentes del complemento.', 'This index contains summaries, aggregate habits, and persistent TODOs saved by the plugin.') }}</p>
+        <p class="page-note">{{ t('Este índice contiene resúmenes, hábitos agregados, TODOs persistentes y métricas locales del complemento.', 'This index contains summaries, aggregate habits, persistent TODOs, and local metrics saved by the plugin.') }}</p>
         <p v-if="error" class="notice" role="alert">{{ error }} <button type="button" :disabled="busy" @click="load">{{ t('Reintentar', 'Retry') }}</button></p>
         <p v-if="busy" role="status">{{ t('Guardando cambios…', 'Saving changes…') }}</p>
         <p v-if="!data && !error" role="status">{{ t('Leyendo la memoria local…', 'Reading local memory…') }}</p>
@@ -289,6 +448,275 @@ export default {
             </div>
           </section>
         </template>
+
+        <section id="metrics" v-show="activeView === 'metrics'" aria-labelledby="metrics-heading" :aria-busy="metricsLoading">
+          <header class="report-heading">
+            <div>
+              <h2 id="metrics-heading">{{ t('Métricas de uso', 'Usage metrics') }}</h2>
+              <p class="section-note">{{ t('Tokens, coste reportado y caché por agente, modelo y proyecto. El coste solo se muestra cuando hay cobertura de precio; no se estima USD.', 'Tokens, reported cost, and cache by agent, model, and project. Cost is shown only when price coverage exists; USD is not estimated.') }}</p>
+            </div>
+          </header>
+
+          <fieldset class="metrics-filters">
+            <legend>{{ t('Filtros', 'Filters') }}</legend>
+            <label class="metrics-filter">
+              <span>{{ t('Rango', 'Range') }}</span>
+              <select v-model.number="rangeDays">
+                <option :value="7">{{ t('7 días', '7 days') }}</option>
+                <option :value="30">{{ t('30 días', '30 days') }}</option>
+                <option :value="90">{{ t('90 días', '90 days') }}</option>
+              </select>
+            </label>
+            <label class="metrics-filter">
+              <span>{{ t('Proyecto', 'Project') }}</span>
+              <select v-model="metricProject">
+                <option value="">{{ t('Todos los proyectos', 'All projects') }}</option>
+                <option v-for="project in metricOptions.projects" :key="project.key" :value="project.key">{{ projectOptionLabel(project) }}</option>
+              </select>
+            </label>
+            <label class="metrics-filter">
+              <span>{{ t('Agente', 'Agent') }}</span>
+              <select v-model="metricAgent">
+                <option value="">{{ t('Todos los agentes', 'All agents') }}</option>
+                <option v-for="agent in metricOptions.agents" :key="agent" :value="agent">{{ agent }}</option>
+              </select>
+            </label>
+            <label class="metrics-filter">
+              <span>{{ t('Proveedor', 'Provider') }}</span>
+              <select v-model="metricProvider">
+                <option value="">{{ t('Todos los proveedores', 'All providers') }}</option>
+                <option v-for="provider in metricOptions.providers" :key="provider" :value="provider">{{ provider }}</option>
+              </select>
+            </label>
+            <label class="metrics-filter">
+              <span>{{ t('Modelo', 'Model') }}</span>
+              <select v-model="metricModel">
+                <option value="">{{ t('Todos los modelos', 'All models') }}</option>
+                <option v-for="model in metricOptions.models" :key="model" :value="model">{{ model }}</option>
+              </select>
+            </label>
+            <button type="button" class="metrics-reset" :disabled="!hasMetricFilters" @click="clearMetricFilters">{{ t('Limpiar filtros', 'Clear filters') }}</button>
+          </fieldset>
+
+          <p v-if="metricsError" class="notice" role="alert">{{ metricsError }} <button type="button" @click="loadMetrics">{{ t('Reintentar', 'Retry') }}</button></p>
+          <p v-if="metricsLoading" role="status">{{ t('Leyendo métricas…', 'Reading metrics…') }}</p>
+          <p v-else-if="metricsEmpty && !metricsError" class="empty-report metrics-empty">{{ t('La instrumentación empieza ahora. Aún no hay pasos registrados en este rango; el backfill aproximado puede tardar unos segundos.', 'Instrumentation starts now. No steps recorded in this range yet; approximate backfill may take a few seconds.') }}</p>
+
+          <template v-if="metrics && !metricsEmpty">
+            <div class="metrics-cards">
+              <article class="metric-card"><span>{{ t('Pasos', 'Steps') }}</span><strong>{{ formatNumber(metrics.totals.steps) }}</strong><small>{{ t('registrados en el rango', 'recorded in range') }}</small></article>
+              <article class="metric-card"><span>{{ t('Entrada sin caché', 'Uncached input') }}</span><strong>{{ formatCompact(metrics.totals.tokens.input) }}</strong><small>{{ t('tokens de entrada', 'input tokens') }}</small></article>
+              <article class="metric-card"><span>{{ t('Caché leída', 'Cache read') }}</span><strong>{{ formatCompact(metrics.totals.tokens.cacheRead) }}</strong><small>{{ t('tokens reutilizados', 'reused tokens') }}</small></article>
+              <article class="metric-card"><span>{{ t('Salida', 'Output') }}</span><strong>{{ formatCompact(metrics.totals.tokens.output) }}</strong><small>{{ t('tokens generados', 'generated tokens') }}</small></article>
+              <article class="metric-card"><span>{{ t('Razonamiento', 'Reasoning') }}</span><strong>{{ formatCompact(metrics.totals.tokens.reasoning) }}</strong><small>{{ t('tokens de razonamiento', 'reasoning tokens') }}</small></article>
+              <article class="metric-card"><span>{{ t('Coste reportado', 'Reported cost') }}</span><strong>{{ reportedCost(metrics.totals) }}</strong><small>{{ coverageText(metrics.totals) }}</small></article>
+            </div>
+
+            <article class="savings-panel">
+              <div>
+                <h3>{{ t('Ahorro medido por caché', 'Measured cache savings') }}</h3>
+                <p class="section-note">{{ t(`cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Medición exacta; no se estima USD sin precios.`, `cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Exact measurement; USD is not estimated without prices.`) }}</p>
+              </div>
+              <strong class="savings-rate">{{ formatPercent(metrics.totals.cacheHitRate) }}</strong>
+              <p class="savings-detail">{{ formatCompact(metrics.totals.tokens.cacheRead) }} / {{ formatCompact(cacheDenominator) }} {{ t('tokens de entrada reutilizados', 'input tokens reused') }}</p>
+            </article>
+
+            <div class="metrics-charts">
+              <article class="trend-panel">
+                <h3>{{ t('Tokens por día · UTC', 'Tokens per day · UTC') }}</h3>
+                <ul class="trend-legend" :aria-label="t('Leyenda del gráfico de tokens', 'Token chart legend')">
+                  <li class="input-series">{{ seriesLabel('input') }}</li>
+                  <li class="cache-series">{{ seriesLabel('cache') }}</li>
+                  <li class="output-series">{{ seriesLabel('output') }}</li>
+                </ul>
+                <p v-if="!tokenChart.length" class="empty-report">{{ t('Sin tokens registrados en este rango.', 'No tokens recorded in this range.') }}</p>
+                <template v-else>
+                  <p class="section-note">{{ t(`Días: ${firstMetricDay} – ${lastMetricDay}.`, `Days: ${firstMetricDay} – ${lastMetricDay}.`) }}</p>
+                  <svg class="trend-chart metrics-chart" viewBox="0 0 720 180" role="img" aria-labelledby="metrics-tokens-title metrics-tokens-desc">
+                    <title id="metrics-tokens-title">{{ t('Tokens diarios por serie', 'Daily tokens by series') }}</title>
+                    <desc id="metrics-tokens-desc">{{ t(`Barras apiladas de entrada sin caché, caché leída y salida para ${metrics.series.length} días UTC.`, `Stacked bars of uncached input, cache read, and output for ${metrics.series.length} UTC days.`) }}</desc>
+                    <line x1="28" y1="152" x2="704" y2="152" class="chart-axis" />
+                    <rect v-for="bar in tokenChart" :key="`${bar.day}-${bar.key}`" :class="`${bar.key}-series`"
+                      :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height">
+                      <title>{{ `${bar.day} · ${seriesLabel(bar.key)}: ${formatNumber(bar.value)}` }}</title>
+                    </rect>
+                    <text :x="metrics.series.length === 1 ? 366 : 28" y="173" :text-anchor="metrics.series.length === 1 ? 'middle' : 'start'">{{ firstMetricDay }}</text>
+                    <text v-if="metrics.series.length > 1" x="704" y="173" text-anchor="end">{{ lastMetricDay }}</text>
+                  </svg>
+                </template>
+              </article>
+
+              <article class="trend-panel">
+                <h3>{{ t('Coste reportado por día · UTC', 'Reported cost per day · UTC') }}</h3>
+                <p v-if="!metrics.totals.costCoverage" class="empty-report">{{ t('Ningún paso tiene coste reportado en este rango; no se estima USD.', 'No step has a reported cost in this range; USD is not estimated.') }}</p>
+                <template v-else>
+                  <p class="section-note">{{ t('Solo pasos con coste reportado. La cobertura se muestra en las tablas.', 'Reported-cost steps only. Coverage is shown in the tables.') }}</p>
+                  <svg class="trend-chart metrics-chart" viewBox="0 0 720 180" role="img" aria-labelledby="metrics-cost-title metrics-cost-desc">
+                    <title id="metrics-cost-title">{{ t('Coste reportado por día', 'Reported cost per day') }}</title>
+                    <desc id="metrics-cost-desc">{{ t(`Línea de coste reportado en USD para ${metrics.series.length} días UTC; no incluye precios estimados.`, `Reported cost line in USD for ${metrics.series.length} UTC days; it does not include estimated prices.`) }}</desc>
+                    <line x1="28" y1="152" x2="704" y2="152" class="chart-axis" />
+                    <path :d="costChart.path" class="cost-line" />
+                    <circle v-for="point in costChart.points" :key="point.day" :cx="point.x" :cy="point.y" r="1.8" class="cost-point">
+                      <title>{{ `${point.day}: ${formatCost(point.cost)}` }}</title>
+                    </circle>
+                    <text :x="metrics.series.length === 1 ? 366 : 28" y="173" :text-anchor="metrics.series.length === 1 ? 'middle' : 'start'">{{ firstMetricDay }}</text>
+                    <text v-if="metrics.series.length > 1" x="704" y="173" text-anchor="end">{{ lastMetricDay }}</text>
+                  </svg>
+                </template>
+              </article>
+            </div>
+
+            <p class="section-note metrics-tables-note">{{ t('Máximo 50 filas por dimensión. El coste se muestra solo cuando hay pasos con precio reportado; la cobertura indica cuántos lo tienen.', 'Up to 50 rows per dimension. Cost is shown only when steps have a reported price; coverage shows how many do.') }}</p>
+            <div class="metrics-tables">
+              <article class="metrics-table-panel">
+                <table class="metrics-table">
+                  <caption>{{ t('Por agente', 'By agent') }}</caption>
+                  <thead><tr><th scope="col">{{ t('Agente', 'Agent') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in metrics.byAgent" :key="row.key ?? 'none'">
+                      <th scope="row">{{ row.key || t('Sin agente', 'No agent') }}</th>
+                      <td class="numeric">{{ formatNumber(row.steps) }}</td>
+                      <td>{{ tokenBreakdown(row) }}</td>
+                      <td class="numeric">{{ reportedCost(row) }}</td>
+                      <td class="numeric">{{ coverageText(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!metrics.byAgent.length" class="empty-report">{{ t('Sin datos por agente en este rango.', 'No agent data in this range.') }}</p>
+              </article>
+
+              <article class="metrics-table-panel">
+                <table class="metrics-table">
+                  <caption>{{ t('Por modelo y proveedor', 'By model and provider') }}</caption>
+                  <thead><tr><th scope="col">{{ t('Modelo / proveedor', 'Model / provider') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in metrics.byModel" :key="`${row.provider ?? ''}:${row.key ?? ''}`">
+                      <th scope="row"><span>{{ row.key || t('Sin modelo', 'No model') }}</span><small class="row-sub">{{ row.provider || t('Sin proveedor', 'No provider') }}</small></th>
+                      <td class="numeric">{{ formatNumber(row.steps) }}</td>
+                      <td>{{ tokenBreakdown(row) }}</td>
+                      <td class="numeric">{{ reportedCost(row) }}</td>
+                      <td class="numeric">{{ coverageText(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!metrics.byModel.length" class="empty-report">{{ t('Sin datos por modelo en este rango.', 'No model data in this range.') }}</p>
+              </article>
+
+              <article class="metrics-table-panel">
+                <table class="metrics-table">
+                  <caption>{{ t('Por proyecto', 'By project') }}</caption>
+                  <thead><tr><th scope="col">{{ t('Proyecto / directorio', 'Project / directory') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in metrics.byProject" :key="row.key ?? 'none'">
+                      <th scope="row"><code class="project-hash">{{ row.key || '—' }}</code><small class="row-sub">{{ row.directory || t('Directorio no disponible', 'Directory unavailable') }}</small></th>
+                      <td class="numeric">{{ formatNumber(row.steps) }}</td>
+                      <td>{{ tokenBreakdown(row) }}</td>
+                      <td class="numeric">{{ reportedCost(row) }}</td>
+                      <td class="numeric">{{ coverageText(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!metrics.byProject.length" class="empty-report">{{ t('Sin datos por proyecto en este rango.', 'No project data in this range.') }}</p>
+              </article>
+
+              <article class="metrics-table-panel">
+                <table class="metrics-table">
+                  <caption>{{ t('Por tipo de petición', 'By request type') }}</caption>
+                  <thead><tr><th scope="col">{{ t('Tipo', 'Type') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in metrics.byKind" :key="row.key">
+                      <th scope="row">{{ metricKindLabel(row.key) }}</th>
+                      <td class="numeric">{{ formatNumber(row.steps) }}</td>
+                      <td>{{ tokenBreakdown(row) }}</td>
+                      <td class="numeric">{{ reportedCost(row) }}</td>
+                      <td class="numeric">{{ coverageText(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!metrics.byKind.length" class="empty-report">{{ t('Sin datos por tipo en este rango.', 'No type data in this range.') }}</p>
+              </article>
+            </div>
+          </template>
+
+          <section class="plugin-health" aria-labelledby="plugin-health-heading">
+            <header class="plugin-heading">
+              <div>
+                <h3 id="plugin-health-heading">{{ t('Salud del plugin', 'Plugin health') }}</h3>
+                <p class="section-note">{{ t('Contadores en memoria de esta sesión del plugin; no se guardan en store-v1.json y no incluyen prompts, rutas, argumentos ni IDs de sesión.', 'In-memory counters for this plugin session; they are not saved in store-v1.json and contain no prompts, paths, arguments, or session IDs.') }}</p>
+              </div>
+            </header>
+            <p v-if="pluginEmpty && !metricsLoading && !metricsError" class="empty-report">{{ t('Aún no hay actividad interna registrada. Los contadores aparecen cuando el plugin procesa hooks, storage o SSE.', 'No internal activity recorded yet. Counters appear when the plugin handles hooks, storage, or SSE.') }}</p>
+            <template v-else-if="!pluginEmpty">
+              <div class="metrics-cards">
+                <article class="metric-card"><span>{{ t('Hooks', 'Hooks') }}</span><strong>{{ formatNumber(pluginHookCalls) }}</strong><small>{{ t('llamadas', 'calls') }} · {{ formatNumber(pluginHookErrors) }} {{ t('errores', 'errors') }}</small></article>
+                <article class="metric-card"><span>{{ t('Almacenamiento', 'Storage') }}</span><strong>{{ formatNumber(plugin.store.reads) }} / {{ formatNumber(plugin.store.writes) }}</strong><small>{{ t('lecturas / escrituras', 'reads / writes') }}</small></article>
+                <article class="metric-card"><span>{{ t('Contexto inyectado', 'Injected context') }}</span><strong>{{ formatNumber(plugin.context.injectedChars) }}</strong><small>{{ t('caracteres', 'characters') }} · {{ formatNumber(plugin.context.injections) }} {{ t('inyecciones', 'injections') }}</small></article>
+                <article class="metric-card"><span>{{ t('SSE', 'SSE') }}</span><strong>{{ formatNumber(plugin.sse.clients) }}</strong><small>{{ t('clientes · pico', 'clients · peak') }} {{ formatNumber(plugin.sse.peakClients) }}</small></article>
+                <article class="metric-card"><span>{{ t('Peticiones 2xx', '2xx requests') }}</span><strong>{{ formatNumber(plugin.requests['2xx']) }}</strong><small>4xx {{ formatNumber(plugin.requests['4xx']) }} · 5xx {{ formatNumber(plugin.requests['5xx']) }}</small></article>
+                <article class="metric-card"><span>{{ t('Errores', 'Errors') }}</span><strong>{{ formatNumber(pluginErrorTotal) }}</strong><small>{{ t('contabilizados', 'counted') }}</small></article>
+              </div>
+
+              <div class="metrics-tables plugin-tables">
+                <article class="metrics-table-panel">
+                  <table class="metrics-table">
+                    <caption>{{ t('Hooks del plugin', 'Plugin hooks') }}</caption>
+                    <thead><tr><th scope="col">{{ t('Hook', 'Hook') }}</th><th scope="col">{{ t('Llamadas', 'Calls') }}</th><th scope="col">{{ t('Errores', 'Errors') }}</th><th scope="col">p50</th><th scope="col">p95</th></tr></thead>
+                    <tbody>
+                      <tr v-for="hook in pluginHooks" :key="hook.name">
+                        <th scope="row">{{ pluginHookLabel(hook.name) }}</th>
+                        <td class="numeric">{{ formatNumber(hook.invocations) }}</td>
+                        <td class="numeric">{{ formatNumber(hook.errors) }}</td>
+                        <td class="numeric">{{ formatMillis(hook.p50) }}</td>
+                        <td class="numeric">{{ formatMillis(hook.p95) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </article>
+
+                <article class="metrics-table-panel">
+                  <table class="metrics-table">
+                    <caption>{{ t('Almacenamiento y memoria', 'Storage and memory') }}</caption>
+                    <thead><tr><th scope="col">{{ t('Métrica', 'Metric') }}</th><th scope="col">{{ t('Valor', 'Value') }}</th></tr></thead>
+                    <tbody>
+                      <tr><th scope="row">{{ t('Bytes leídos / escritos', 'Bytes read / written') }}</th><td class="numeric">{{ formatBytes(plugin.store.bytesRead) }} / {{ formatBytes(plugin.store.bytesWritten) }}</td></tr>
+                      <tr><th scope="row">{{ t('Esperas / timeouts de lock', 'Lock waits / timeouts') }}</th><td class="numeric">{{ formatNumber(plugin.store.lockWaits) }} / {{ formatNumber(plugin.store.lockTimeouts) }}</td></tr>
+                      <tr><th scope="row">{{ t('Latencia de escritura p50 / p95', 'Write latency p50 / p95') }}</th><td class="numeric">{{ formatMillis(plugin.store.writeLatency.p50) }} / {{ formatMillis(plugin.store.writeLatency.p95) }}</td></tr>
+                      <tr><th scope="row">{{ t('Tamaño store / metrics', 'Store / metrics size') }}</th><td class="numeric">{{ formatBytes(plugin.bytes.store) }} / {{ formatBytes(plugin.bytes.metrics) }}</td></tr>
+                      <tr><th scope="row">{{ t('Avisos checkpoint / TODO', 'Checkpoint / TODO notices') }}</th><td class="numeric">{{ formatNumber(plugin.context.notices.checkpoint) }} / {{ formatNumber(plugin.context.notices.todo) }}</td></tr>
+                    </tbody>
+                  </table>
+                </article>
+
+                <article class="metrics-table-panel">
+                  <table class="metrics-table">
+                    <caption>{{ t('SSE, peticiones y flush', 'SSE, requests, and flush') }}</caption>
+                    <thead><tr><th scope="col">{{ t('Métrica', 'Metric') }}</th><th scope="col">{{ t('Valor', 'Value') }}</th></tr></thead>
+                    <tbody>
+                      <tr><th scope="row">{{ t('Clientes SSE / pico', 'SSE clients / peak') }}</th><td class="numeric">{{ formatNumber(plugin.sse.clients) }} / {{ formatNumber(plugin.sse.peakClients) }}</td></tr>
+                      <tr><th scope="row">{{ t('Refrescos SSE', 'SSE refreshes') }}</th><td class="numeric">{{ formatNumber(plugin.sse.refreshes) }}</td></tr>
+                      <tr><th scope="row">{{ t('Peticiones 2xx / 4xx / 5xx', 'Requests 2xx / 4xx / 5xx') }}</th><td class="numeric">{{ formatNumber(plugin.requests['2xx']) }} / {{ formatNumber(plugin.requests['4xx']) }} / {{ formatNumber(plugin.requests['5xx']) }}</td></tr>
+                      <tr><th scope="row">{{ t('Último flush', 'Last flush') }}</th><td class="numeric">{{ formatTime(plugin.flush.lastAt) }}</td></tr>
+                      <tr><th scope="row">{{ t('Pendientes / fallos de flush', 'Flush pending / failures') }}</th><td class="numeric">{{ formatNumber(plugin.flush.pending) }} / {{ formatNumber(plugin.flush.failures) }}</td></tr>
+                    </tbody>
+                  </table>
+                </article>
+
+                <article class="metrics-table-panel">
+                  <table class="metrics-table">
+                    <caption>{{ t('Errores y estado actual', 'Errors and current state') }}</caption>
+                    <thead><tr><th scope="col">{{ t('Categoría', 'Category') }}</th><th scope="col">{{ t('Valor', 'Value') }}</th></tr></thead>
+                    <tbody>
+                      <tr v-for="error in pluginErrors" :key="error.key"><th scope="row">{{ pluginErrorLabel(error.key) }}</th><td class="numeric">{{ formatNumber(error.count) }}</td></tr>
+                      <tr><th scope="row">{{ t('Checkpoints / TODOs / ámbitos', 'Checkpoints / TODOs / scopes') }}</th><td class="numeric">{{ pluginCurrent ? `${formatNumber(pluginCurrent.checkpoints)} / ${formatNumber(pluginCurrent.todos)} / ${formatNumber(pluginCurrent.scopes)}` : '—' }}</td></tr>
+                      <tr><th scope="row">{{ t('TODOs activos', 'Active TODOs') }}</th><td class="numeric">{{ pluginCurrent ? formatNumber(pluginCurrent.activeTodos) : '—' }}</td></tr>
+                      <tr><th scope="row">{{ t('Activo desde', 'Active since') }}</th><td class="numeric">{{ formatTime(plugin.startedAt) }}</td></tr>
+                    </tbody>
+                  </table>
+                </article>
+              </div>
+            </template>
+          </section>
+        </section>
       </main>
     </div>
   </div>

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, projectDirectoryLabel, reportGroups, trendBars } from '../src/ui-model.js'
+import { checkpointTitle, costLine, dailyTrend, groupCheckpoints, groupTodos, metricsRange, projectDirectoryLabel, reportGroups, tokenBars, trendBars } from '../src/ui-model.js'
 
 test('checkpoint groups expand by exact project and retain each context/checkpoint', () => {
   const first = { id: 'one', project: 'a / b', context: 'c' }
@@ -96,4 +96,51 @@ test('daily series aggregates UTC tools and commands and produces native chart b
   ])
   assert.ok(bars.every(({ x, y, width, height }) => [x, y, width, height].every(Number.isFinite)))
   assert.ok(bars.every(({ x, width }) => x >= 28 - 1e-6 && x + width <= 704 + 1e-6))
+})
+
+test('metrics range stays inside 7, 30 and 90 UTC days', () => {
+  assert.deepEqual(metricsRange(7, '2026-11-11'), { from: '2026-11-05', to: '2026-11-11' })
+  assert.deepEqual(metricsRange(30, '2026-11-11'), { from: '2026-10-13', to: '2026-11-11' })
+  assert.deepEqual(metricsRange(90, '2026-11-11'), { from: '2026-08-14', to: '2026-11-11' })
+  assert.deepEqual(metricsRange(4, '2026-11-11'), metricsRange(30, '2026-11-11'))
+})
+
+test('token bars handle empty, one day and the 90-day viewBox limits', () => {
+  assert.deepEqual(tokenBars([]), [])
+  const one = tokenBars([{ day: '2026-11-11', tokens: { input: 10, cacheRead: 20, output: 5 } }])
+  assert.deepEqual(one.map(({ key, value }) => [key, value]), [['input', 10], ['cache', 20], ['output', 5]])
+  const center = 28 + (720 - 28 - 16) / 2
+  assert.ok(one.every(({ x, width }) => Math.abs(x + width / 2 - center) < 1e-6))
+  assert.ok(one.every(({ x, y, width, height }) => [x, y, width, height].every(Number.isFinite)))
+  assert.ok(one.every(({ x, width }) => x >= 28 - 1e-6 && x + width <= 704 + 1e-6))
+  assert.ok(one.every(({ y, height }) => y >= 12 - 1e-6 && y + height <= 152 + 1e-6))
+  assert.equal(one.find(({ key }) => key === 'input').y + one.find(({ key }) => key === 'input').height, 152)
+
+  const many = tokenBars(Array.from({ length: 90 }, (_, index) => ({
+    day: new Date(Date.UTC(2026, 7, 14 + index)).toISOString().slice(0, 10),
+    tokens: { input: index + 1, cacheRead: index + 2, output: 3 },
+  })))
+  assert.equal(many.length, 270)
+  assert.ok(many.every(({ x, y, width, height }) => [x, y, width, height].every(Number.isFinite)))
+  assert.ok(many.every(({ x, width }) => x >= 28 - 1e-6 && x + width <= 704 + 1e-6))
+  assert.ok(many.every(({ y, height }) => y >= 12 - 1e-6 && y + height <= 152 + 1e-6))
+})
+
+test('cost line handles empty, one point and the 90-day viewBox limits', () => {
+  assert.deepEqual(costLine([]), { path: '', points: [] })
+  const one = costLine([{ day: '2026-11-11', cost: 0.5 }])
+  assert.equal(one.points.length, 1)
+  assert.equal(one.points[0].x, 28 + (720 - 28 - 16) / 2)
+  assert.equal(one.points[0].y, 12)
+  assert.match(one.path, /^M /)
+
+  const many = costLine(Array.from({ length: 90 }, (_, index) => ({
+    day: new Date(Date.UTC(2026, 7, 14 + index)).toISOString().slice(0, 10),
+    cost: index % 3,
+  })))
+  assert.equal(many.points.length, 90)
+  assert.equal(many.points[0].x, 28)
+  assert.equal(many.points.at(-1).x, 704)
+  assert.ok(many.points.every(({ x, y }) => x >= 28 - 1e-6 && x <= 704 + 1e-6 && y >= 12 - 1e-6 && y <= 152 + 1e-6))
+  assert.match(many.path, /^M 28 /)
 })

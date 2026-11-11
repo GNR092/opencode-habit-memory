@@ -87,6 +87,81 @@ export function dailyTrend(daily = {}, today = new Date().toISOString().slice(0,
   }).filter(({ tools, commands }) => tools + commands > 0)
 }
 
+function metricDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
+}
+
+export function metricsRange(days, today = new Date().toISOString().slice(0, 10)) {
+  const allowed = [7, 30, 90]
+  const span = allowed.includes(Number(days)) ? Number(days) : 30
+  const to = metricDate(today) ? today : new Date().toISOString().slice(0, 10)
+  const from = new Date(`${to}T00:00:00.000Z`)
+  from.setUTCDate(from.getUTCDate() - (span - 1))
+  return { from: from.toISOString().slice(0, 10), to }
+}
+
+export function tokenBars(series = [], options = {}) {
+  if (!Array.isArray(series) || !series.length) return []
+  const rows = series.filter((row) => row && metricDate(row.day))
+  if (!rows.length) return []
+  const width = options.width ?? 720
+  const height = options.height ?? 180
+  const left = options.left ?? 28
+  const right = options.right ?? 16
+  const top = options.top ?? 12
+  const bottom = options.bottom ?? 28
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const max = Math.max(1, ...rows.map((row) => {
+    const tokens = row.tokens ?? {}
+    return Number(tokens.input || 0) + Number(tokens.cacheRead || 0) + Number(tokens.output || 0)
+  }))
+  const slot = plotWidth / rows.length
+  const barWidth = Math.max(1, Math.min(28, slot * .62))
+  return rows.flatMap((row, index) => {
+    const x = rows.length === 1 ? left + (plotWidth - barWidth) / 2 : left + index * slot + (slot - barWidth) / 2
+    const values = [
+      ['input', Number(row.tokens?.input || 0)],
+      ['cache', Number(row.tokens?.cacheRead || 0)],
+      ['output', Number(row.tokens?.output || 0)],
+    ]
+    let cursor = top + plotHeight
+    return values.map(([key, value]) => {
+      const heightValue = Math.max(0, value) / max * plotHeight
+      const y = Math.max(top, cursor - heightValue)
+      const bar = { day: row.day, key, value, x, y, width: barWidth, height: cursor - y }
+      cursor -= heightValue
+      return bar
+    }).filter(({ value, height: barHeight }) => value > 0 && barHeight > 0)
+  })
+}
+
+export function costLine(series = [], options = {}) {
+  if (!Array.isArray(series) || !series.length) return { path: '', points: [] }
+  const rows = series.filter((row) => row && metricDate(row.day))
+  if (!rows.length) return { path: '', points: [] }
+  const width = options.width ?? 720
+  const height = options.height ?? 180
+  const left = options.left ?? 28
+  const right = options.right ?? 16
+  const top = options.top ?? 12
+  const bottom = options.bottom ?? 28
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const max = Math.max(0, ...rows.map((row) => Number(row.cost || 0)))
+  const scale = max > 0 ? max : 1
+  const points = rows.map((row, index) => {
+    const cost = Math.max(0, Number(row.cost || 0))
+    const x = rows.length === 1 ? left + plotWidth / 2 : left + (index / (rows.length - 1)) * plotWidth
+    const y = Math.min(top + plotHeight, Math.max(top, top + plotHeight - (cost / scale) * plotHeight))
+    return { day: row.day, cost, x, y }
+  })
+  return {
+    path: points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' '),
+    points,
+  }
+}
+
 export function trendBars(series) {
   if (!series.length) return []
   const width = 720, height = 180, left = 28, right = 16, top = 12, bottom = 28

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { viewFromHash, viewIds, watchHashView } from '../src/ui-navigation.js'
 
 test('native hash selects known views and defaults to reports', () => {
-  assert.deepEqual(viewIds, ['reports', 'checkpoints', 'todos'])
+  assert.deepEqual(viewIds, ['reports', 'checkpoints', 'todos', 'metrics'])
   assert.deepEqual(viewIds.map((view) => viewFromHash(`#${view}`)), viewIds)
   assert.equal(viewFromHash(''), 'reports')
   assert.equal(viewFromHash('#inicio'), 'reports')
@@ -37,4 +37,27 @@ test('each navigation link marks only its matching visible view', async () => {
     assert.ok(app.includes(`id="${view}" v-show="activeView === '${view}'"`))
   }
   assert.match(app, /id="checkpoints"[\s\S]*?<section class="stat-strip checkpoint-summary"/)
+})
+
+test('metrics view keeps filters, accessible charts, captions and series colors', async () => {
+  const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/ui.css', import.meta.url), 'utf8')
+  for (const fragment of [
+    'class="metrics-filters"',
+    'v-model.number="rangeDays"',
+    'aria-labelledby="metrics-heading"',
+    'id="metrics-tokens-title"',
+    'id="metrics-cost-title"',
+    'id="plugin-health-heading"',
+    'class="plugin-health"',
+    'pluginEmpty',
+    'class="cost-line"',
+    '<caption>',
+    'scope="col"',
+    'scope="row"',
+  ]) assert.ok(app.includes(fragment), fragment)
+  assert.match(app, /\/api\/metrics\?/)
+  for (const variable of ['--series-input', '--series-cache', '--series-output']) assert.ok(css.includes(variable), variable)
+  assert.match(css, /\.metrics-table caption/)
+  assert.match(css, /\.trend-chart \.input-series/)
 })
