@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import { basename, isAbsolute } from "node:path"
 import { getData, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteCheckpoint, importLegacy, createTodo, listTodos, updateTodo, archiveTodo } from "./src/store.js"
 import { startUiServer, stopUiServer } from "./src/ui-server.js"
+import { backfillMetrics, createMetricsCollector, createMetricsStore } from "./src/metrics.js"
+import { measureHook, recordContextChars, recordHookError, recordNotice } from "./src/plugin-stats.js"
 
 const storageKey = "profile-v1"
 const checkpointKeyPrefix = "project-checkpoint:v1:"
@@ -254,16 +256,44 @@ function todoView({ id, task, status, createdAt, updatedAt }) {
 export default {
   id: "global-habit-memory",
   async setup(ctx) {
+    let stopMetrics
+    let metrics
+    try {
+      metrics = createMetricsStore()
+      const collector = createMetricsCollector({
+        store: metrics,
+        subscribe: (options) => ctx.event.subscribe(options),
+        getSession: (sessionID) => ctx.session.get({ sessionID }),
+      })
+      const backfill = backfillMetrics({
+        store: metrics,
+        listSessions: (params) => ctx.session.list(params),
+      })
+      void backfill.catch(() => {})
+      const onExit = () => { try { collector.flush() } catch {} }
+      process.once("exit", onExit)
+      let stopped = false
+      stopMetrics = async () => {
+        if (stopped) return
+        stopped = true
+        process.off("exit", onExit)
+        try { await collector.stop() } catch {}
+        try { await backfill } catch {}
+        try { metrics.close() } catch {}
+      }
+    } catch { try { metrics?.close() } catch {} }
     try { await importLegacy(await ctx.storage.get(storageKey)) } catch {}
-    await ctx.tool.hook("execute.after", async (event) => {
+    await ctx.tool.hook("execute.after", (event) => measureHook("tool.execute.after", async () => {
       if (event.status !== "completed" || !toolNames.has(event.tool)) return
-      await record(`tool:${event.tool}`).catch(() => {})
-    })
-    await ctx.shell.hook("create.before", async (event) => {
+      try { await record(`tool:${event.tool}`) } catch { recordHookError("tool.execute.after") }
+    }))
+    await ctx.shell.hook("create.before", (event) => measureHook("shell.create.before", async () => {
       const command = typeof event.command === "string" ? event.command.match(cliPattern)?.[1] : undefined
-      if (command) await record(`cli:${command}`).catch(() => {})
-    })
-    await ctx.session.hook("prompt", async (event) => {
+      if (command) {
+        try { await record(`cli:${command}`) } catch { recordHookError("shell.create.before") }
+      }
+    }))
+    await ctx.session.hook("prompt", (event) => measureHook("session.prompt", async () => {
       if (typeof event.sessionID === "string") promptIntents.set(event.sessionID, checkpointIntent(event.prompt?.text))
       const categories = requestCategories(event)
       if (!categories.length) return
@@ -276,16 +306,21 @@ export default {
       try {
         await recordMany(categories)
       } catch {
+        recordHookError("session.prompt")
         if (messageID) seenPromptIDs.delete(messageID)
       }
-    })
-    await ctx.session.hook("context", async (event) => {
+    }))
+    await ctx.session.hook("context", (event) => measureHook("session.context", async () => {
+      const inject = (item) => {
+        event.system.push(item)
+        if (typeof item?.text === "string") recordContextChars(item.text.length)
+      }
       try {
         await writes
         const profile = await readProfile()
         const intent = promptIntents.get(event?.sessionID) ?? "unclear"
         if (typeof event?.sessionID === "string") promptIntents.delete(event.sessionID)
-        event.system.push({
+        inject({
           type: "text",
           text: [
             profileSummary(profile.counts),
@@ -293,11 +328,11 @@ export default {
           ].join(" "),
         })
         const checkpointNotice = await projectCheckpointContext(ctx, event, intent)
-        if (checkpointNotice) event.system.push(checkpointNotice)
+        if (checkpointNotice) { inject(checkpointNotice); recordNotice("checkpoint") }
         const todoNotice = await projectTodoContext(ctx, event, intent)
-        if (todoNotice) event.system.push(todoNotice)
-      } catch {}
-    })
+        if (todoNotice) { inject(todoNotice); recordNotice("todo") }
+      } catch { recordHookError("session.context") }
+    }))
     await ctx.command.transform((editor) => {
       editor.add({
         name: "habit-memory-ui",
@@ -461,5 +496,6 @@ export default {
         },
       })
     })
+    return stopMetrics
   },
 }
