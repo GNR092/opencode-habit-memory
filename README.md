@@ -1,6 +1,8 @@
 # Habit Memory
 
-Plugin local de OpenCode para guardar hábitos agregados, checkpoints y TODOs vinculados a proyectos. No conserva el texto de las conversaciones ni de los prompts.
+Plugin local de OpenCode para guardar hábitos agregados, checkpoints y TODOs vinculados a proyectos, y para mostrar métricas de uso en su WebUI. No conserva el texto de las conversaciones ni de los prompts.
+
+Requiere **Node.js 24 o posterior**.
 
 ## Instalación
 
@@ -18,7 +20,7 @@ OpenCode lo carga desde npm; no hace falta clonar ni compilar. Si la configuraci
 
 ### Desde el repositorio
 
-Requiere Node.js 20 o posterior. Clona el repositorio y compila la WebUI:
+Requiere Node.js 24 o posterior. Clona el repositorio y compila la WebUI:
 
 ```sh
 git clone git@github.com:GNR092/opencode-habit-memory.git
@@ -39,7 +41,7 @@ Los datos se guardan en `$XDG_DATA_HOME/habit-memory-plugin/store-v1.json`; si `
 
 ## WebUI
 
-La interfaz local tiene vistas separadas para informes, checkpoints y TODOs por proyecto; los grupos muestran el directorio cuando se conoce. Se actualiza en vivo cuando cambia el store local, sin recargar la página. En OpenCode, `/habit-memory-ui` la inicia y muestra su dirección; `/habit-memory-ui-stop` la detiene. También se puede iniciar desde el proyecto con:
+La interfaz local tiene vistas separadas para **Informes**, **Puntos guardados**, **TODOs** por proyecto y **Métricas**; los grupos muestran el directorio cuando se conoce. Se actualiza en vivo cuando cambia el store local o `metrics.db`, sin recargar la página. En OpenCode, `/habit-memory-ui` la inicia y muestra su dirección; `/habit-memory-ui-stop` la detiene. También se puede iniciar desde el proyecto con:
 
 ```sh
 npm run ui
@@ -47,7 +49,24 @@ npm run ui
 
 El puerto predeterminado es `43109`; se puede cambiar con `HABIT_MEMORY_UI_PORT`.
 
+### Métricas
+
+La vista **Métricas** lee `GET /api/metrics` y muestra pasos, tokens de entrada sin caché, caché leída, salida, razonamiento y coste reportado con su cobertura. Incluye filtros de 7/30/90 días y por proyecto, agente, proveedor y modelo, gráficas SVG de tokens y coste, tablas por agente/modelo/proyecto/tipo y un bloque de salud del propio plugin.
+
+El detalle se guarda en `metrics.db`, en el mismo directorio que `store-v1.json`:
+
+```text
+$XDG_DATA_HOME/habit-memory-plugin/metrics.db
+~/.local/share/habit-memory-plugin/metrics.db   # si XDG_DATA_HOME no está definido
+```
+
+`store-v1.json` no se modifica. `metrics.db` se actualiza con eventos de OpenCode (`session.step.ended` y `session.usage.recorded`), con un backfill aproximado de sesiones recientes y con retención de 90 días UTC. No guarda prompts, argumentos, rutas absolutas, títulos de sesión ni IDs crudos: usa hashes, basenames y etiquetas allowlisted. La vista no estima USD sin precios y no publica un total único de tokens; mantiene las series separadas.
+
+Consulta [`docs/metrics.md`](docs/metrics.md) para el esquema SQLite, la API, la privacidad y el troubleshooting.
+
 ## Publicación
+
+La versión **0.1.0 ya está publicada** en npm. La versión **0.2.0 está preparada en este repositorio pero todavía no se ha publicado**.
 
 ```sh
 npm login
