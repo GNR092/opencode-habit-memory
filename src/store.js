@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
+import { recordStoreError, recordStoreLockTimeout, recordStoreLockWait, recordStoreRead, recordStoreWrite, storeStats } from "./plugin-stats.js"
 
 const maxBytes = 2_000_000
 const categories = new Set([
@@ -82,10 +83,12 @@ function valid(data) {
 async function read() {
   try {
     const raw = await readFile(storePath)
+    recordStoreRead(raw.length)
     if (raw.length > maxBytes) throw new Error("Storage exceeds size limit")
     return valid(JSON.parse(raw))
   } catch (error) {
-    if (error.code === "ENOENT") return empty()
+    if (error.code === "ENOENT") { recordStoreRead(0); return empty() }
+    recordStoreError()
     throw error
   }
 }
@@ -117,7 +120,8 @@ async function locked(fn) {
       await recoverStaleLock()
     }
     if (!handle) {
-      if (Date.now() >= deadline) throw new Error("Storage is locked")
+      if (Date.now() >= deadline) { recordStoreLockTimeout(); throw new Error("Storage is locked") }
+      recordStoreLockWait()
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
   }
@@ -130,19 +134,26 @@ async function locked(fn) {
   }
 }
 async function write(data) {
-  valid(data)
-  const serialized = JSON.stringify(data)
-  if (Buffer.byteLength(serialized) > maxBytes) throw new Error("Storage exceeds size limit")
-  const temp = `${storePath}.${process.pid}.${randomUUID()}.tmp`
-  const handle = await open(temp, "wx", 0o600)
+  const started = Date.now()
   try {
-    await handle.writeFile(serialized)
-    await handle.sync()
-    await handle.close()
-    await rename(temp, storePath)
+    valid(data)
+    const serialized = JSON.stringify(data)
+    if (Buffer.byteLength(serialized) > maxBytes) throw new Error("Storage exceeds size limit")
+    const temp = `${storePath}.${process.pid}.${randomUUID()}.tmp`
+    const handle = await open(temp, "wx", 0o600)
+    try {
+      await handle.writeFile(serialized)
+      await handle.sync()
+      await handle.close()
+      await rename(temp, storePath)
+    } catch (error) {
+      await handle.close().catch(() => {})
+      await unlink(temp).catch(() => {})
+      throw error
+    }
+    recordStoreWrite(Buffer.byteLength(serialized), Date.now() - started)
   } catch (error) {
-    await handle.close().catch(() => {})
-    await unlink(temp).catch(() => {})
+    recordStoreError()
     throw error
   }
 }
@@ -261,6 +272,10 @@ export async function archiveTodo(project, id) {
     return true
   })
 }
+export function getStoreStats() {
+  return storeStats()
+}
+
 export async function importLegacy(profile, checkpoint) {
   return locked(async () => {
     const data = await read()
