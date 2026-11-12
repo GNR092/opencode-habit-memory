@@ -509,7 +509,6 @@ export default {
               <article class="metric-card"><span>{{ t('Caché leída', 'Cache read') }}</span><strong>{{ formatCompact(metrics.totals.tokens.cacheRead) }}</strong><small>{{ t('tokens reutilizados', 'reused tokens') }}</small></article>
               <article class="metric-card"><span>{{ t('Salida', 'Output') }}</span><strong>{{ formatCompact(metrics.totals.tokens.output) }}</strong><small>{{ t('tokens generados', 'generated tokens') }}</small></article>
               <article class="metric-card"><span>{{ t('Razonamiento', 'Reasoning') }}</span><strong>{{ formatCompact(metrics.totals.tokens.reasoning) }}</strong><small>{{ t('tokens de razonamiento', 'reasoning tokens') }}</small></article>
-              <article class="metric-card"><span>{{ t('Coste reportado', 'Reported cost') }}</span><strong>{{ reportedCost(metrics.totals) }}</strong><small>{{ coverageText(metrics.totals) }}</small></article>
             </div>
 
             <article class="savings-panel">
