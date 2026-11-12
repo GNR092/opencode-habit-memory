@@ -68,12 +68,14 @@ Tras actualizar el plugin, reinicia OpenCode o recarga el plugin para cargar la 
 
 ## Publicación
 
-La versión **0.1.0 ya está publicada** en npm. La versión **0.2.0 está preparada en este repositorio pero todavía no se ha publicado**.
+El paquete se publica en npm con:
 
 ```sh
 npm login
 npm publish
 ```
+
+Consulta la versión publicada con `npm view opencode-global-habit-profile version`.
 
 `prepublishOnly` ejecuta las pruebas y el build. El paquete incluye `dist/`, así que quien lo instala desde npm no necesita compilar.
 
