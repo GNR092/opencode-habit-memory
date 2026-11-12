@@ -41,7 +41,7 @@ Los datos se guardan en `$XDG_DATA_HOME/habit-memory-plugin/store-v1.json`; si `
 
 ## WebUI
 
-La interfaz local tiene vistas separadas para **Informes**, **Puntos guardados**, **TODOs** por proyecto y **Métricas**; los grupos muestran el directorio cuando se conoce. Se actualiza en vivo cuando cambia el store local o `metrics.db`, sin recargar la página. En OpenCode, `/habit-memory-ui` la inicia y muestra su dirección; `/habit-memory-ui-stop` la detiene. También se puede iniciar desde el proyecto con:
+La interfaz local tiene vistas separadas para **Informes**, **Puntos guardados**, **TODOs** por proyecto y **Métricas**; los grupos muestran el directorio cuando se conoce. Se actualiza sin recargar la página cuando cambia el store local o `metrics.db`; las métricas se escriben por lotes, así que un paso nuevo puede tardar hasta ~15 s en aparecer. En OpenCode, `/habit-memory-ui` la inicia y muestra su dirección; `/habit-memory-ui-stop` la detiene. También se puede iniciar desde el proyecto con:
 
 ```sh
 npm run ui
@@ -63,6 +63,8 @@ $XDG_DATA_HOME/habit-memory-plugin/metrics.db
 `store-v1.json` no se modifica. `metrics.db` se actualiza con eventos de OpenCode (`session.step.ended` y `session.usage.recorded`), con un backfill aproximado de sesiones recientes y con retención de 90 días UTC. No guarda prompts, argumentos, rutas absolutas, títulos de sesión ni IDs crudos: usa hashes, basenames y etiquetas allowlisted. La vista no estima USD sin precios y no publica un total único de tokens; mantiene las series separadas.
 
 Consulta [`docs/metrics.md`](docs/metrics.md) para el esquema SQLite, la API, la privacidad y el troubleshooting.
+
+Tras actualizar el plugin, reinicia OpenCode o recarga el plugin para cargar la suscripción de eventos; recargar solo la WebUI no recarga `index.js`.
 
 ## Publicación
 
