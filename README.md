@@ -51,7 +51,7 @@ El puerto predeterminado es `43109`; se puede cambiar con `HABIT_MEMORY_UI_PORT`
 
 ### Métricas
 
-La vista **Métricas** lee `GET /api/metrics` y muestra pasos, tokens de entrada sin caché, caché leída, salida, razonamiento y coste reportado con su cobertura. Incluye filtros de 7/30/90 días y por proyecto, agente, proveedor y modelo, gráficas SVG de tokens y coste, tablas por agente/modelo/proyecto/tipo y un bloque de salud del propio plugin.
+La vista **Métricas** lee `GET /api/metrics` y muestra pasos, tokens de entrada sin caché, caché leída, salida y razonamiento. Incluye filtros de 7/30/90 días y por proyecto, agente, proveedor y modelo, una gráfica SVG de tokens, tablas por agente/modelo/proyecto/tipo ordenables por nombre, pasos o tokens, y un bloque de salud del propio plugin. El coste y su cobertura siguen disponibles en la API, pero no se muestran en la vista.
 
 El detalle se guarda en `metrics.db`, en el mismo directorio que `store-v1.json`:
 

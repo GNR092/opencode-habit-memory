@@ -2,7 +2,7 @@
 
 ## Intención y firma
 
-Consola privada de observabilidad para quien abre la herramienta entre tareas y necesita identificar patrones, ámbitos y checkpoints, editar o borrar datos con seguridad y entender el uso de tokens, caché y coste reportado. Debe sentirse precisa, sobria y compacta; no es un dashboard financiero ni un producto de marketing. La firma son las filas de procedencia: cada renglón de hábito conserva su señal (**solicitud explícita** o **uso observado**) y su clave original, y cada checkpoint queda anclado a su **Proyecto** y **Contexto** dentro de un grupo identificado por **Directorio / Proyecto**. En Métricas, la firma se amplía con series de tokens separadas y una tasa de caché medida, nunca estimada.
+Consola privada de observabilidad para quien abre la herramienta entre tareas y necesita identificar patrones, ámbitos y checkpoints, editar o borrar datos con seguridad y entender el uso de tokens y caché. Debe sentirse precisa, sobria y compacta; no es un dashboard financiero ni un producto de marketing. La firma son las filas de procedencia: cada renglón de hábito conserva su señal (**solicitud explícita** o **uso observado**) y su clave original, y cada checkpoint queda anclado a su **Proyecto** y **Contexto** dentro de un grupo identificado por **Directorio / Proyecto**. En Métricas, la firma se amplía con series de tokens separadas y una tasa de caché medida, nunca estimada.
 
 ## Dirección visual
 
@@ -20,10 +20,10 @@ Consola privada de observabilidad para quien abre la herramienta entre tareas y 
 - Los informes presentan dos tarjetas, **Herramientas** y **Comandos**, con total teal y ranking descendente. Cada renglón rotula su señal (**solicitud explícita** / **uso observado**), su tipo y nombre, y conserva la clave original en mono.
 - La tendencia es una gráfica SVG nativa de barras agrupadas por día UTC, con ventana móvil de 365 días y series teal (herramientas) y morada (comandos). Incluye leyenda, título y descripción, y declara que empieza con la instrumentación nueva, sin fechas ni actividad fabricadas para los conteos legacy.
 - **Métricas** ofrece filtros de rango 7/30/90 días y por proyecto, agente, proveedor y modelo; cada cambio vuelve a consultar `/api/metrics`. Tiene estados de carga, error con **Reintentar** y vacío con el mensaje de que la instrumentación empieza ahora. Las opciones de filtro se acumulan para no perder la selección al aplicar otro filtro.
-- Las tarjetas de Métricas muestran pasos, entrada sin caché, caché leída, salida, razonamiento y coste reportado. El coste siempre lleva su cobertura; si no hay cobertura se muestra `—`, nunca un total inventado.
-- El panel de ahorro presenta `cacheHitRate = cache.read / (input + cache.read + cache.write)` como medición exacta. No se estima USD ni se presenta un ahorro económico sin precios.
-- Las series de Métricas son cinco campos separados: `input`, `output`, `reasoning`, `cacheRead`, `cacheWrite`. No hay un total único de tokens. La gráfica apila input, caché leída y salida; la línea de coste solo aparece si hay cobertura y no incluye precios estimados.
-- Las tablas de Métricas cubren agente, modelo/proveedor, proyecto (hash + directorio) y tipo de petición, con pasos, tokens, coste y cobertura. Se limitan a 50 filas por dimensión; no se presenta coste sin cobertura.
+- Las tarjetas de Métricas muestran pasos, entrada sin caché, caché leída, salida y razonamiento. El coste y su cobertura siguen en `/api/metrics`, pero no se muestran en la vista.
+- El panel de ahorro presenta `cacheHitRate = cache.read / (input + cache.read + cache.write)` como medición exacta de tokens reutilizados. No se estima ningún ahorro económico.
+- Las series de Métricas son cinco campos separados: `input`, `output`, `reasoning`, `cacheRead`, `cacheWrite`. No hay un total único de tokens. La gráfica apila input, caché leída y salida; es la única gráfica de la vista.
+- Las tablas de Métricas cubren agente, modelo/proveedor, proyecto (hash + directorio) y tipo de petición, con pasos y tokens. Se limitan a 50 filas por dimensión. Cada tabla ordena de forma independiente por nombre, pasos o tokens: por defecto pasos descendente, la misma cabecera alterna y una columna nueva empieza en ascendente para el nombre y descendente para las cifras; el desempate es alfabético. Las cabeceras son botones nativos con `aria-sort` e indicador ↑/↓.
 - **Salud del plugin** muestra contadores en memoria: hooks, storage, contexto inyectado, SSE, peticiones 2xx/4xx/5xx, flush y errores, además de checkpoints/TODOs/ámbitos actuales. Es una sección de diagnóstico, no un panel de negocio; si el bloque `plugin` no existe o está vacío se muestra un estado vacío claro.
 - Los puntos guardados se agrupan por proyecto. El resumen de cada grupo muestra **Directorio**, **Proyecto** y cantidad real; cada entrada conserva título de sesión, resumen, **Contexto**, fecha y acciones de editar/eliminar. La lista no se limita ni se recorta.
 - Los TODOs se agrupan por proyecto y estado —pendientes, completados y archivados—, muestran el **Directorio** del proyecto cuando se conoce y ofrecen casilla para incluir archivados.
@@ -40,6 +40,6 @@ Consola privada de observabilidad para quien abre la herramienta entre tareas y 
 ## Accesibilidad y límites
 
 - Estructura semántica, controles etiquetados, `<fieldset>`/`<legend>` en filtros, `<caption>` y `scope` en tablas, foco visible de 2px, contraste AA, idioma del documento sincronizado y movimiento reducido.
-- Las gráficas SVG son nativas, con `role="img"`, `<title>`, `<desc>`, leyenda y tooltip por barra/punto. No hay charts falsos ni librerías de gráficas.
+- Las gráficas SVG son nativas, con `role="img"`, `<title>`, `<desc>`, leyenda y tooltip por barra. No hay charts falsos ni librerías de gráficas.
 - No añadir dependencias, CDN, datos sintéticos, marca/terminología financiera ni iconografía decorativa. Las tendencias y métricas nunca contienen eventos raw, prompts, comandos literales o conversaciones.
-- Breakpoints de `30rem` (panel de ahorro a una columna), `45rem` y `68rem` (gráficas y tablas de Métricas a dos columnas). Componentes implementados en `src/App.vue`, `src/ui-model.js` y `src/ui.css`.
+- Breakpoints de `30rem` (panel de ahorro a una columna), `45rem` y `68rem` (tablas de Métricas a dos columnas); la gráfica de tokens ocupa el ancho disponible. Componentes implementados en `src/App.vue`, `src/ui-model.js` y `src/ui.css`.

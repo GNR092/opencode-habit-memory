@@ -104,7 +104,8 @@ No se convierte a USD ni se presenta como ahorro económico.
 
 - `priced = 1` solo cuando el runtime reporta `cost > 0`.
 - `costCoverage = pricedSteps / steps`.
-- En la UI, si la cobertura es `0`, el coste se muestra como `—`; las tablas siempre muestran la cobertura junto al coste.
+- `/api/metrics` sigue publicando `cost`, `pricedSteps` y `costCoverage` en `totals` y en cada fila agregada.
+- La vista **Métricas** no muestra coste ni cobertura: se limita a pasos, tokens y caché. El coste queda disponible para consumidores de la API.
 - Una cobertura baja significa que muchos pasos no tienen precio reportado, no que el coste sea cero.
 
 ## Retención
@@ -186,7 +187,7 @@ Incluye llamadas/errores/latencias de hooks, lecturas/escrituras del store, byte
 
 **La vista está vacía.** La instrumentación empieza ahora: no se reconstruyen conversaciones antiguas. El backfill aproximado puede tardar unos segundos; espera al siguiente refresco o consulta el rango.
 
-**El coste sale como `—` o con cobertura baja.** OpenCode no reportó precio para esos pasos. No se estima USD; usa `costCoverage` para saber qué proporción tiene precio.
+**Necesito coste o cobertura.** La vista no los muestra, pero `/api/metrics` sigue devolviendo `cost`, `pricedSteps` y `costCoverage` en `totals` y en cada fila. Una cobertura baja significa que OpenCode no reportó precio para esos pasos; no se estima USD.
 
 **`400 Invalid metrics query`.** Revisa fechas `YYYY-MM-DD`, que `from <= to`, que el rango no supere 90 días y que los filtros existan.
 

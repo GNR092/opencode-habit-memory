@@ -136,30 +136,31 @@ export function tokenBars(series = [], options = {}) {
   })
 }
 
-export function costLine(series = [], options = {}) {
-  if (!Array.isArray(series) || !series.length) return { path: '', points: [] }
-  const rows = series.filter((row) => row && metricDate(row.day))
-  if (!rows.length) return { path: '', points: [] }
-  const width = options.width ?? 720
-  const height = options.height ?? 180
-  const left = options.left ?? 28
-  const right = options.right ?? 16
-  const top = options.top ?? 12
-  const bottom = options.bottom ?? 28
-  const plotWidth = width - left - right
-  const plotHeight = height - top - bottom
-  const max = Math.max(0, ...rows.map((row) => Number(row.cost || 0)))
-  const scale = max > 0 ? max : 1
-  const points = rows.map((row, index) => {
-    const cost = Math.max(0, Number(row.cost || 0))
-    const x = rows.length === 1 ? left + plotWidth / 2 : left + (index / (rows.length - 1)) * plotWidth
-    const y = Math.min(top + plotHeight, Math.max(top, top + plotHeight - (cost / scale) * plotHeight))
-    return { day: row.day, cost, x, y }
-  })
-  return {
-    path: points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' '),
-    points,
-  }
+export function metricTokenTotal(row) {
+  const tokens = row?.tokens ?? {}
+  return ['input', 'output', 'reasoning', 'cacheRead', 'cacheWrite']
+    .reduce((total, field) => total + (Number(tokens[field]) || 0), 0)
+}
+
+export function sortMetricRows(rows = [], key = 'steps', direction = 'desc') {
+  if (!Array.isArray(rows)) return []
+  const column = key === 'name' || key === 'tokens' ? key : 'steps'
+  const factor = direction === 'asc' ? 1 : -1
+  const nameOf = (row) => String(row?.name ?? row?.key ?? '')
+  const providerOf = (row) => String(row?.provider ?? '')
+  const valueOf = (row) => column === 'tokens'
+    ? metricTokenTotal(row)
+    : column === 'steps' ? Number(row?.steps) || 0 : 0
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const byName = nameOf(a.row).localeCompare(nameOf(b.row))
+      const primary = column === 'name' ? byName * factor : (valueOf(a.row) - valueOf(b.row)) * factor
+      if (primary) return primary
+      if (column === 'name') return providerOf(a.row).localeCompare(providerOf(b.row)) || a.index - b.index
+      return byName || providerOf(a.row).localeCompare(providerOf(b.row)) || a.index - b.index
+    })
+    .map(({ row }) => row)
 }
 
 export function trendBars(series) {

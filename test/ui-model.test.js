@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { checkpointTitle, costLine, dailyTrend, groupCheckpoints, groupTodos, metricsRange, projectDirectoryLabel, reportGroups, tokenBars, trendBars } from '../src/ui-model.js'
+import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, metricTokenTotal, metricsRange, projectDirectoryLabel, reportGroups, sortMetricRows, tokenBars, trendBars } from '../src/ui-model.js'
 
 test('checkpoint groups expand by exact project and retain each context/checkpoint', () => {
   const first = { id: 'one', project: 'a / b', context: 'c' }
@@ -126,21 +126,20 @@ test('token bars handle empty, one day and the 90-day viewBox limits', () => {
   assert.ok(many.every(({ y, height }) => y >= 12 - 1e-6 && y + height <= 152 + 1e-6))
 })
 
-test('cost line handles empty, one point and the 90-day viewBox limits', () => {
-  assert.deepEqual(costLine([]), { path: '', points: [] })
-  const one = costLine([{ day: '2026-11-11', cost: 0.5 }])
-  assert.equal(one.points.length, 1)
-  assert.equal(one.points[0].x, 28 + (720 - 28 - 16) / 2)
-  assert.equal(one.points[0].y, 12)
-  assert.match(one.path, /^M /)
+test('metric rows sort immutably with stable name tie-breaks', () => {
+  const rows = [
+    { key: 'beta', steps: 2, tokens: { input: 10, cacheRead: 5, output: 1, reasoning: 0, cacheWrite: 0 } },
+    { key: 'alpha', steps: 2, tokens: { input: 1, cacheRead: 0, output: 0, reasoning: 0, cacheWrite: 0 } },
+    { key: 'gamma', steps: 9, tokens: { input: 0, cacheRead: 0, output: 0, reasoning: 0, cacheWrite: 0 } },
+  ]
+  const original = rows.map(({ key }) => key)
 
-  const many = costLine(Array.from({ length: 90 }, (_, index) => ({
-    day: new Date(Date.UTC(2026, 7, 14 + index)).toISOString().slice(0, 10),
-    cost: index % 3,
-  })))
-  assert.equal(many.points.length, 90)
-  assert.equal(many.points[0].x, 28)
-  assert.equal(many.points.at(-1).x, 704)
-  assert.ok(many.points.every(({ x, y }) => x >= 28 - 1e-6 && x <= 704 + 1e-6 && y >= 12 - 1e-6 && y <= 152 + 1e-6))
-  assert.match(many.path, /^M 28 /)
+  assert.deepEqual(sortMetricRows(rows, 'steps', 'desc').map(({ key }) => key), ['gamma', 'alpha', 'beta'])
+  assert.deepEqual(sortMetricRows(rows, 'steps', 'asc').map(({ key }) => key), ['alpha', 'beta', 'gamma'])
+  assert.deepEqual(sortMetricRows(rows, 'name', 'asc').map(({ key }) => key), ['alpha', 'beta', 'gamma'])
+  assert.equal(metricTokenTotal(rows[0]), 16)
+  assert.deepEqual(sortMetricRows(rows, 'tokens', 'desc').map(({ key }) => key), ['beta', 'alpha', 'gamma'])
+  assert.deepEqual(sortMetricRows([{ key: 'a', name: 'Zulu' }, { key: 'b', name: 'Alfa' }], 'name', 'asc').map(({ key }) => key), ['b', 'a'])
+  assert.deepEqual(rows.map(({ key }) => key), original)
+  assert.deepEqual(sortMetricRows(undefined), [])
 })

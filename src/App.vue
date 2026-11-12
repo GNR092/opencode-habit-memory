@@ -1,6 +1,6 @@
 <script>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { checkpointTitle, costLine, dailyTrend, groupCheckpoints, groupTodos, metricsRange, projectDirectoryLabel, reportGroups, tokenBars, trendBars } from './ui-model.js'
+import { checkpointTitle, dailyTrend, groupCheckpoints, groupTodos, metricsRange, projectDirectoryLabel, reportGroups, sortMetricRows, tokenBars, trendBars } from './ui-model.js'
 import { viewFromHash, watchHashView } from './ui-navigation.js'
 
 export default {
@@ -27,13 +27,9 @@ export default {
     const decimalFormat = computed(() => new Intl.NumberFormat(language.value, { maximumFractionDigits: 1 }))
     const compactFormat = computed(() => new Intl.NumberFormat(language.value, { notation: 'compact', maximumFractionDigits: 1 }))
     const percentFormat = computed(() => new Intl.NumberFormat(language.value, { style: 'percent', maximumFractionDigits: 1 }))
-    const currencyFormat = computed(() => new Intl.NumberFormat(language.value, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }))
     const formatNumber = (value) => numberFormat.value.format(Number(value) || 0)
     const formatCompact = (value) => compactFormat.value.format(Number(value) || 0)
     const formatPercent = (value) => percentFormat.value.format(Number(value) || 0)
-    const formatCost = (value) => currencyFormat.value.format(Number(value) || 0)
-    const reportedCost = (row) => Number(row?.costCoverage) > 0 ? formatCost(row.cost) : '—'
-    const coverageText = (row) => `${formatPercent(row?.costCoverage ?? 0)} · ${formatNumber(row?.pricedSteps ?? 0)}/${formatNumber(row?.steps ?? 0)} ${t('pasos', 'steps')}`
     const tokenBreakdown = (row) => {
       const tokens = row?.tokens ?? {}
       return [
@@ -60,13 +56,34 @@ export default {
     const metricsEmpty = computed(() => Boolean(metrics.value) && metrics.value.totals?.steps === 0)
     const hasMetricFilters = computed(() => Boolean(metricProject.value || metricAgent.value || metricProvider.value || metricModel.value))
     const tokenChart = computed(() => tokenBars(metrics.value?.series ?? []))
-    const costChart = computed(() => costLine(metrics.value?.series ?? []))
     const firstMetricDay = computed(() => metrics.value?.series?.[0]?.day ?? '')
     const lastMetricDay = computed(() => metrics.value?.series?.at(-1)?.day ?? '')
     const cacheDenominator = computed(() => {
       const tokens = metrics.value?.totals?.tokens
       return tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : 0
     })
+    const sortTables = ['agent', 'model', 'project', 'kind']
+    const sortState = ref(Object.fromEntries(sortTables.map((table) => [table, { key: 'steps', direction: 'desc' }])))
+    const sortRows = (table, rows, nameOf = (row) => row?.key ?? '') => sortMetricRows(
+      rows.map((row) => ({ ...row, name: nameOf(row) })),
+      sortState.value[table].key,
+      sortState.value[table].direction,
+    )
+    const agentRows = computed(() => sortRows('agent', metrics.value?.byAgent ?? []))
+    const modelRows = computed(() => sortRows('model', metrics.value?.byModel ?? [], (row) => `${row.key ?? ''} ${row.provider ?? ''}`))
+    const projectRows = computed(() => sortRows('project', metrics.value?.byProject ?? [], (row) => row.directory || row.key || ''))
+    const kindRows = computed(() => sortRows('kind', metrics.value?.byKind ?? [], (row) => metricKindLabel(row.key)))
+    function toggleSort(table, key) {
+      const state = sortState.value[table]
+      state.direction = state.key === key ? (state.direction === 'asc' ? 'desc' : 'asc') : (key === 'name' ? 'asc' : 'desc')
+      state.key = key
+    }
+    const ariaSort = (table, key) => sortState.value[table].key !== key
+      ? 'none'
+      : sortState.value[table].direction === 'asc' ? 'ascending' : 'descending'
+    const sortIndicator = (table, key) => sortState.value[table].key !== key
+      ? ''
+      : sortState.value[table].direction === 'asc' ? '↑' : '↓'
     const plugin = computed(() => metrics.value?.plugin ?? null)
     const pluginHooks = computed(() => Object.entries(plugin.value?.hooks ?? {}).map(([name, hook]) => ({
       name,
@@ -274,7 +291,7 @@ export default {
       metricsRequest++
       document.removeEventListener('visibilitychange', refreshOnVisible)
     })
-    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits, metrics, metricsError, metricsLoading, rangeDays, metricProject, metricAgent, metricProvider, metricModel, metricOptions, metricsEmpty, hasMetricFilters, tokenChart, costChart, firstMetricDay, lastMetricDay, cacheDenominator, formatNumber, formatCompact, formatPercent, formatCost, reportedCost, coverageText, tokenBreakdown, seriesLabel, metricKindLabel, projectOptionLabel, clearMetricFilters, loadMetrics, plugin, pluginHooks, pluginErrors, pluginHookCalls, pluginHookErrors, pluginErrorTotal, pluginCurrent, pluginEmpty, formatMillis, formatBytes, formatTime, pluginHookLabel, pluginErrorLabel }
+    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits, metrics, metricsError, metricsLoading, rangeDays, metricProject, metricAgent, metricProvider, metricModel, metricOptions, metricsEmpty, hasMetricFilters, tokenChart, firstMetricDay, lastMetricDay, cacheDenominator, formatNumber, formatCompact, formatPercent, tokenBreakdown, agentRows, modelRows, projectRows, kindRows, toggleSort, ariaSort, sortIndicator, seriesLabel, metricKindLabel, projectOptionLabel, clearMetricFilters, loadMetrics, plugin, pluginHooks, pluginErrors, pluginHookCalls, pluginHookErrors, pluginErrorTotal, pluginCurrent, pluginEmpty, formatMillis, formatBytes, formatTime, pluginHookLabel, pluginErrorLabel }
   },
 }
 </script>
@@ -453,7 +470,7 @@ export default {
           <header class="report-heading">
             <div>
               <h2 id="metrics-heading">{{ t('Métricas de uso', 'Usage metrics') }}</h2>
-              <p class="section-note">{{ t('Tokens, coste reportado y caché por agente, modelo y proyecto. El coste solo se muestra cuando hay cobertura de precio; no se estima USD.', 'Tokens, reported cost, and cache by agent, model, and project. Cost is shown only when price coverage exists; USD is not estimated.') }}</p>
+              <p class="section-note">{{ t('Tokens y caché por agente, modelo y proyecto, medidos a partir del uso reportado por el runtime.', 'Tokens and cache by agent, model, and project, measured from usage reported by the runtime.') }}</p>
             </div>
           </header>
 
@@ -514,7 +531,7 @@ export default {
             <article class="savings-panel">
               <div>
                 <h3>{{ t('Ahorro medido por caché', 'Measured cache savings') }}</h3>
-                <p class="section-note">{{ t(`cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Medición exacta; no se estima USD sin precios.`, `cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Exact measurement; USD is not estimated without prices.`) }}</p>
+                <p class="section-note">{{ t(`cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Medición exacta de tokens reutilizados.`, `cacheRead / (input + cacheRead + cacheWrite) = ${formatPercent(metrics.totals.cacheHitRate)}. Exact measurement of reused tokens.`) }}</p>
               </div>
               <strong class="savings-rate">{{ formatPercent(metrics.totals.cacheHitRate) }}</strong>
               <p class="savings-detail">{{ formatCompact(metrics.totals.tokens.cacheRead) }} / {{ formatCompact(cacheDenominator) }} {{ t('tokens de entrada reutilizados', 'input tokens reused') }}</p>
@@ -545,39 +562,29 @@ export default {
                 </template>
               </article>
 
-              <article class="trend-panel">
-                <h3>{{ t('Coste reportado por día · UTC', 'Reported cost per day · UTC') }}</h3>
-                <p v-if="!metrics.totals.costCoverage" class="empty-report">{{ t('Ningún paso tiene coste reportado en este rango; no se estima USD.', 'No step has a reported cost in this range; USD is not estimated.') }}</p>
-                <template v-else>
-                  <p class="section-note">{{ t('Solo pasos con coste reportado. La cobertura se muestra en las tablas.', 'Reported-cost steps only. Coverage is shown in the tables.') }}</p>
-                  <svg class="trend-chart metrics-chart" viewBox="0 0 720 180" role="img" aria-labelledby="metrics-cost-title metrics-cost-desc">
-                    <title id="metrics-cost-title">{{ t('Coste reportado por día', 'Reported cost per day') }}</title>
-                    <desc id="metrics-cost-desc">{{ t(`Línea de coste reportado en USD para ${metrics.series.length} días UTC; no incluye precios estimados.`, `Reported cost line in USD for ${metrics.series.length} UTC days; it does not include estimated prices.`) }}</desc>
-                    <line x1="28" y1="152" x2="704" y2="152" class="chart-axis" />
-                    <path :d="costChart.path" class="cost-line" />
-                    <circle v-for="point in costChart.points" :key="point.day" :cx="point.x" :cy="point.y" r="1.8" class="cost-point">
-                      <title>{{ `${point.day}: ${formatCost(point.cost)}` }}</title>
-                    </circle>
-                    <text :x="metrics.series.length === 1 ? 366 : 28" y="173" :text-anchor="metrics.series.length === 1 ? 'middle' : 'start'">{{ firstMetricDay }}</text>
-                    <text v-if="metrics.series.length > 1" x="704" y="173" text-anchor="end">{{ lastMetricDay }}</text>
-                  </svg>
-                </template>
-              </article>
             </div>
 
-            <p class="section-note metrics-tables-note">{{ t('Máximo 50 filas por dimensión. El coste se muestra solo cuando hay pasos con precio reportado; la cobertura indica cuántos lo tienen.', 'Up to 50 rows per dimension. Cost is shown only when steps have a reported price; coverage shows how many do.') }}</p>
+            <p class="section-note metrics-tables-note">{{ t('Máximo 50 filas por dimensión. Ordena por nombre, pasos o tokens desde las cabeceras.', 'Up to 50 rows per dimension. Sort by name, steps, or tokens from the column headers.') }}</p>
             <div class="metrics-tables">
               <article class="metrics-table-panel">
                 <table class="metrics-table">
                   <caption>{{ t('Por agente', 'By agent') }}</caption>
-                  <thead><tr><th scope="col">{{ t('Agente', 'Agent') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <thead><tr>
+                    <th scope="col" :aria-sort="ariaSort('agent', 'name')">
+                      <button type="button" class="sort-button" @click="toggleSort('agent', 'name')">{{ t('Agente', 'Agent') }}<span v-if="sortIndicator('agent', 'name')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('agent', 'name') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('agent', 'steps')">
+                      <button type="button" class="sort-button" @click="toggleSort('agent', 'steps')">{{ t('Pasos', 'Steps') }}<span v-if="sortIndicator('agent', 'steps')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('agent', 'steps') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('agent', 'tokens')">
+                      <button type="button" class="sort-button" @click="toggleSort('agent', 'tokens')">{{ t('Tokens', 'Tokens') }}<span v-if="sortIndicator('agent', 'tokens')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('agent', 'tokens') }}</span></button>
+                    </th>
+                  </tr></thead>
                   <tbody>
-                    <tr v-for="row in metrics.byAgent" :key="row.key ?? 'none'">
+                    <tr v-for="row in agentRows" :key="row.key ?? 'none'">
                       <th scope="row">{{ row.key || t('Sin agente', 'No agent') }}</th>
                       <td class="numeric">{{ formatNumber(row.steps) }}</td>
                       <td>{{ tokenBreakdown(row) }}</td>
-                      <td class="numeric">{{ reportedCost(row) }}</td>
-                      <td class="numeric">{{ coverageText(row) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -587,14 +594,22 @@ export default {
               <article class="metrics-table-panel">
                 <table class="metrics-table">
                   <caption>{{ t('Por modelo y proveedor', 'By model and provider') }}</caption>
-                  <thead><tr><th scope="col">{{ t('Modelo / proveedor', 'Model / provider') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <thead><tr>
+                    <th scope="col" :aria-sort="ariaSort('model', 'name')">
+                      <button type="button" class="sort-button" @click="toggleSort('model', 'name')">{{ t('Modelo / proveedor', 'Model / provider') }}<span v-if="sortIndicator('model', 'name')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('model', 'name') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('model', 'steps')">
+                      <button type="button" class="sort-button" @click="toggleSort('model', 'steps')">{{ t('Pasos', 'Steps') }}<span v-if="sortIndicator('model', 'steps')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('model', 'steps') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('model', 'tokens')">
+                      <button type="button" class="sort-button" @click="toggleSort('model', 'tokens')">{{ t('Tokens', 'Tokens') }}<span v-if="sortIndicator('model', 'tokens')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('model', 'tokens') }}</span></button>
+                    </th>
+                  </tr></thead>
                   <tbody>
-                    <tr v-for="row in metrics.byModel" :key="`${row.provider ?? ''}:${row.key ?? ''}`">
+                    <tr v-for="row in modelRows" :key="`${row.provider ?? ''}:${row.key ?? ''}`">
                       <th scope="row"><span>{{ row.key || t('Sin modelo', 'No model') }}</span><small class="row-sub">{{ row.provider || t('Sin proveedor', 'No provider') }}</small></th>
                       <td class="numeric">{{ formatNumber(row.steps) }}</td>
                       <td>{{ tokenBreakdown(row) }}</td>
-                      <td class="numeric">{{ reportedCost(row) }}</td>
-                      <td class="numeric">{{ coverageText(row) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -604,14 +619,22 @@ export default {
               <article class="metrics-table-panel">
                 <table class="metrics-table">
                   <caption>{{ t('Por proyecto', 'By project') }}</caption>
-                  <thead><tr><th scope="col">{{ t('Proyecto / directorio', 'Project / directory') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <thead><tr>
+                    <th scope="col" :aria-sort="ariaSort('project', 'name')">
+                      <button type="button" class="sort-button" @click="toggleSort('project', 'name')">{{ t('Proyecto / directorio', 'Project / directory') }}<span v-if="sortIndicator('project', 'name')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('project', 'name') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('project', 'steps')">
+                      <button type="button" class="sort-button" @click="toggleSort('project', 'steps')">{{ t('Pasos', 'Steps') }}<span v-if="sortIndicator('project', 'steps')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('project', 'steps') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('project', 'tokens')">
+                      <button type="button" class="sort-button" @click="toggleSort('project', 'tokens')">{{ t('Tokens', 'Tokens') }}<span v-if="sortIndicator('project', 'tokens')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('project', 'tokens') }}</span></button>
+                    </th>
+                  </tr></thead>
                   <tbody>
-                    <tr v-for="row in metrics.byProject" :key="row.key ?? 'none'">
+                    <tr v-for="row in projectRows" :key="row.key ?? 'none'">
                       <th scope="row"><code class="project-hash">{{ row.key || '—' }}</code><small class="row-sub">{{ row.directory || t('Directorio no disponible', 'Directory unavailable') }}</small></th>
                       <td class="numeric">{{ formatNumber(row.steps) }}</td>
                       <td>{{ tokenBreakdown(row) }}</td>
-                      <td class="numeric">{{ reportedCost(row) }}</td>
-                      <td class="numeric">{{ coverageText(row) }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -621,14 +644,22 @@ export default {
               <article class="metrics-table-panel">
                 <table class="metrics-table">
                   <caption>{{ t('Por tipo de petición', 'By request type') }}</caption>
-                  <thead><tr><th scope="col">{{ t('Tipo', 'Type') }}</th><th scope="col">{{ t('Pasos', 'Steps') }}</th><th scope="col">{{ t('Tokens', 'Tokens') }}</th><th scope="col">{{ t('Coste', 'Cost') }}</th><th scope="col">{{ t('Cobertura', 'Coverage') }}</th></tr></thead>
+                  <thead><tr>
+                    <th scope="col" :aria-sort="ariaSort('kind', 'name')">
+                      <button type="button" class="sort-button" @click="toggleSort('kind', 'name')">{{ t('Tipo', 'Type') }}<span v-if="sortIndicator('kind', 'name')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('kind', 'name') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('kind', 'steps')">
+                      <button type="button" class="sort-button" @click="toggleSort('kind', 'steps')">{{ t('Pasos', 'Steps') }}<span v-if="sortIndicator('kind', 'steps')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('kind', 'steps') }}</span></button>
+                    </th>
+                    <th scope="col" :aria-sort="ariaSort('kind', 'tokens')">
+                      <button type="button" class="sort-button" @click="toggleSort('kind', 'tokens')">{{ t('Tokens', 'Tokens') }}<span v-if="sortIndicator('kind', 'tokens')" class="sort-indicator" aria-hidden="true">{{ sortIndicator('kind', 'tokens') }}</span></button>
+                    </th>
+                  </tr></thead>
                   <tbody>
-                    <tr v-for="row in metrics.byKind" :key="row.key">
+                    <tr v-for="row in kindRows" :key="row.key">
                       <th scope="row">{{ metricKindLabel(row.key) }}</th>
                       <td class="numeric">{{ formatNumber(row.steps) }}</td>
                       <td>{{ tokenBreakdown(row) }}</td>
-                      <td class="numeric">{{ reportedCost(row) }}</td>
-                      <td class="numeric">{{ coverageText(row) }}</td>
                     </tr>
                   </tbody>
                 </table>

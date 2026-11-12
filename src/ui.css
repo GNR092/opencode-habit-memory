@@ -131,6 +131,10 @@ h3 { display: flex; align-items: flex-start; justify-content: space-between; gap
 .metrics-table caption { padding: 0 0 .55rem; color: var(--ink); font-size: .84rem; font-weight: 680; text-align: left; }
 .metrics-table th, .metrics-table td { padding: .5rem .45rem; border-top: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
 .metrics-table thead th { color: var(--muted); font-size: .68rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.metrics-table thead th[aria-sort="ascending"], .metrics-table thead th[aria-sort="descending"] { color: var(--ink); }
+.sort-button { display: flex; align-items: center; gap: .22rem; width: 100%; min-height: 1.75rem; padding: .1rem 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.sort-button:hover:not(:disabled) { border-color: transparent; color: var(--ink); }
+.sort-indicator { color: var(--brand); font-size: .95em; line-height: 1; }
 .metrics-table tbody th { max-width: 16rem; font-weight: 650; overflow-wrap: anywhere; }
 .metrics-table td { color: var(--muted); }
 .metrics-table .numeric { color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
@@ -148,8 +152,6 @@ h3 { display: flex; align-items: flex-start; justify-content: space-between; gap
 .trend-chart .input-series { fill: var(--series-input); }
 .trend-chart .cache-series { fill: var(--series-cache); }
 .trend-chart .output-series { fill: var(--series-output); }
-.cost-line { fill: none; stroke: var(--brand); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.cost-point { fill: var(--brand); }
 
 @media (max-width: 30rem) {
   .savings-panel { grid-template-columns: minmax(0, 1fr); }
@@ -210,7 +212,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (min-width: 68rem) {
   .report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scope-list { grid-template-columns: minmax(0, 1fr); }
-  .metrics-charts, .metrics-tables { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metrics-tables { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
