@@ -4,6 +4,7 @@ import { getData, incrementHabitCounts, saveCheckpoint, listCheckpoints, deleteC
 import { startUiServer, stopUiServer } from "./src/ui-server.js"
 import { backfillMetrics, createMetricsCollector, createMetricsStore } from "./src/metrics.js"
 import { measureHook, recordContextChars, recordHookError, recordNotice } from "./src/plugin-stats.js"
+import { withCommandErrorLog } from "./src/error-log.js"
 
 const storageKey = "profile-v1"
 const checkpointKeyPrefix = "project-checkpoint:v1:"
@@ -338,52 +339,52 @@ export default {
         name: "habit-memory-ui",
         description: "Inicia la WebUI local de Habit Memory y muestra su URL.",
         execute: async ({ sessionID }) => {
-          const server = startUiServer()
-          await new Promise((resolve, reject) => {
+          const server = await withCommandErrorLog("habit-memory-ui", "start-server", () => startUiServer())
+          await withCommandErrorLog("habit-memory-ui", "wait-listening", () => new Promise((resolve, reject) => {
             if (server.listening) return resolve()
             server.once("listening", resolve)
             server.once("error", reject)
-          })
-          await server.controlReady
+          }))
+          await withCommandErrorLog("habit-memory-ui", "publish-control", () => server.controlReady)
           const port = server.remotePort || server.address().port
-          await ctx.session.synthetic({
+          await withCommandErrorLog("habit-memory-ui", "notify-session", () => ctx.session.synthetic({
             sessionID,
             text: `WebUI de Habit Memory: http://127.0.0.1:${port} (Puerto: ${port})`,
             resume: false,
-          })
+          }))
         },
       })
       editor.add({
         name: "habit-memory-ui-stop",
         description: "Detiene la WebUI local de Habit Memory si está iniciada.",
         execute: async ({ sessionID }) => {
-          const stopped = await stopUiServer()
-          await ctx.session.synthetic({
+          const stopped = await withCommandErrorLog("habit-memory-ui-stop", "stop-server", () => stopUiServer())
+          await withCommandErrorLog("habit-memory-ui-stop", "notify-session", () => ctx.session.synthetic({
             sessionID,
             text: stopped ? "WebUI de Habit Memory detenida." : "La WebUI de Habit Memory no estaba iniciada.",
             resume: false,
-          })
+          }))
         },
       })
       editor.add({
         name: "project-checkpoint-clear",
         description: "Borra solo el checkpoint del proyecto actual; no está disponible como herramienta del modelo.",
         execute: async ({ sessionID }) => {
-          const scope = await projectCheckpointKey(ctx, sessionID)
+          const scope = await withCommandErrorLog("project-checkpoint-clear", "resolve-project", () => projectCheckpointKey(ctx, sessionID))
           if (!scope) {
-            await ctx.session.synthetic({ sessionID, text: "No hay identidad confiable del proyecto; no hay checkpoint para borrar.", resume: false })
+            await withCommandErrorLog("project-checkpoint-clear", "notify-session", () => ctx.session.synthetic({ sessionID, text: "No hay identidad confiable del proyecto; no hay checkpoint para borrar.", resume: false }))
             return
           }
-          const removed = await enqueue(async () => {
+          const removed = await withCommandErrorLog("project-checkpoint-clear", "delete-checkpoint", () => enqueue(async () => {
             const current = (await listCheckpoints(scope.project, scope.context))[0]
               ?? (await listCheckpoints(scope.project, "legacy"))[0]
             return current ? deleteCheckpoint(scope.project, current.context, current.id) : false
-          })
-          await ctx.session.synthetic({
+          }))
+          await withCommandErrorLog("project-checkpoint-clear", "notify-session", () => ctx.session.synthetic({
             sessionID,
             text: removed ? "Checkpoint del proyecto actual borrado." : "No hay checkpoint para borrar en el proyecto actual.",
             resume: false,
-          })
+          }))
         },
       })
     })
@@ -402,11 +403,11 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const scope = await projectCheckpointKey(ctx, toolContext?.sessionID)
+          const scope = await withCommandErrorLog("project_checkpoint_save", "resolve-project", () => projectCheckpointKey(ctx, toolContext?.sessionID))
           if (!scope) return { content: "No se guardó el checkpoint: no hay identidad confiable de proyecto para esta sesión." }
           const summary = buildProjectCheckpoint(input.objective, input.next_step)
           if (!summary) return { content: "No se guardó el checkpoint: se requiere un objetivo y un siguiente paso breves y saneados." }
-          await enqueue(() => saveCheckpoint(scope.project, scope.context, summary, scope.sessionTitle, scope.projectDirectoryName))
+          await withCommandErrorLog("project_checkpoint_save", "save-checkpoint", () => enqueue(() => saveCheckpoint(scope.project, scope.context, summary, scope.sessionTitle, scope.projectDirectoryName)))
           return { content: "Checkpoint breve guardado solo para el proyecto actual." }
         },
       })
@@ -419,10 +420,12 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const project = await projectTodoProject(ctx, toolContext?.sessionID)
+          const project = await withCommandErrorLog("project_todo_list", "resolve-project", () => projectTodoProject(ctx, toolContext?.sessionID))
           if (!project) return { content: "No se listaron TODOs: no hay identidad confiable de proyecto para esta sesión." }
-          await writes
-          const todos = await listTodos(project, input.include_archived === true)
+          const todos = await withCommandErrorLog("project_todo_list", "list-todos", async () => {
+            await writes
+            return listTodos(project, input.include_archived === true)
+          })
           return { content: JSON.stringify(todos.map(todoView)) }
         },
       })
@@ -436,10 +439,10 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const identity = await projectIdentity(ctx, toolContext?.sessionID)
+          const identity = await withCommandErrorLog("project_todo_create", "resolve-project", () => projectIdentity(ctx, toolContext?.sessionID))
           if (!identity) return { content: "No se creó el TODO: no hay identidad confiable de proyecto para esta sesión." }
           const directory = projectDirectoryName(identity.session?.location?.directory)
-          const todo = await enqueue(() => createTodo(identity.project, input.task, directory))
+          const todo = await withCommandErrorLog("project_todo_create", "save-todo", () => enqueue(() => createTodo(identity.project, input.task, directory)))
           return { content: JSON.stringify(todoView(todo)) }
         },
       })
@@ -457,9 +460,9 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const project = await projectTodoProject(ctx, toolContext?.sessionID)
+          const project = await withCommandErrorLog("project_todo_update", "resolve-project", () => projectTodoProject(ctx, toolContext?.sessionID))
           if (!project) return { content: "No se actualizó el TODO: no hay identidad confiable de proyecto para esta sesión." }
-          const updated = await enqueue(() => updateTodo(project, input.id, input.task, input.status))
+          const updated = await withCommandErrorLog("project_todo_update", "update-todo", () => enqueue(() => updateTodo(project, input.id, input.task, input.status)))
           return { content: updated ? "TODO actualizado." : "No se encontró un TODO no archivado con ese id en este proyecto." }
         },
       })
@@ -473,9 +476,9 @@ export default {
           additionalProperties: false,
         },
         async execute(input, toolContext) {
-          const project = await projectTodoProject(ctx, toolContext?.sessionID)
+          const project = await withCommandErrorLog("project_todo_archive", "resolve-project", () => projectTodoProject(ctx, toolContext?.sessionID))
           if (!project) return { content: "No se archivó el TODO: no hay identidad confiable de proyecto para esta sesión." }
-          const archived = await enqueue(() => archiveTodo(project, input.id))
+          const archived = await withCommandErrorLog("project_todo_archive", "archive-todo", () => enqueue(() => archiveTodo(project, input.id)))
           return { content: archived ? "TODO archivado." : "No se encontró un TODO no archivado con ese id en este proyecto." }
         },
       })
@@ -489,10 +492,12 @@ export default {
           additionalProperties: false,
         },
         async execute(input) {
-          if (input.action !== "show") throw new Error("Unknown action")
-          await writes
-          const profile = await readProfile()
-          return { content: profileSummary(profile.counts) }
+          return withCommandErrorLog("habit_memory", "show", async () => {
+            if (input.action !== "show") throw new Error("Unknown action")
+            await writes
+            const profile = await readProfile()
+            return { content: profileSummary(profile.counts) }
+          })
         },
       })
     })

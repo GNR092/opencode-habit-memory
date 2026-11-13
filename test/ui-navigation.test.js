@@ -69,3 +69,23 @@ test('metrics view keeps filters, accessible charts, sortable tables and series 
   assert.match(css, /\.sort-button/)
   assert.match(css, /\.sort-indicator/)
 })
+
+test('recent errors use accessible localized states and display only the safe API fields', async () => {
+  const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  for (const fragment of [
+    'aria-labelledby="recent-errors-heading"',
+    'v-for="entry in recentErrors"',
+    '<time :datetime="entry.time">',
+    'entry.command',
+    'entry.phase',
+    'recentErrorReason(entry.reason)',
+    'role="status"',
+    'role="alert"',
+    'No recent errors recorded.',
+    'No hay errores recientes registrados.',
+    'loadRecentErrors()',
+    "'/api/errors'",
+  ]) assert.ok(app.includes(fragment), fragment)
+  assert.match(app, /Up to 30 entries\./)
+  assert.match(app, /Se muestran solo tipo, código y operación/)
+})

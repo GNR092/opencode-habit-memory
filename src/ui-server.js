@@ -8,6 +8,7 @@ import { createServer, request as httpRequest } from "node:http"
 import { clearCheckpoints, clearHabits, deleteCheckpoint, getData, storePath, updateCheckpoint } from "./store.js"
 import { metricsPath, queryMetrics } from "./metrics.js"
 import { pluginSnapshot, recordRequestStatus, recordServerError, recordSseClient, recordSseRefresh } from "./plugin-stats.js"
+import { errorLogPath, logCommandError, readRecentErrors } from "./error-log.js"
 
 const maxBody = 8192
 const distPath = join(fileURLToPath(new URL("../dist/", import.meta.url)))
@@ -15,7 +16,7 @@ const controlPath = "/__habit_memory_control"
 export function createUiServer({ port = 0 } = {}) {
   const token = randomBytes(32).toString("hex")
   const clients = new Set()
-  let watcher, refreshTimer
+  let watcher, errorLogWatcher, refreshTimer
   const server = createServer(async (req, res) => {
     const host = req.headers.host
     if (![ `127.0.0.1:${server.address()?.port}`, `localhost:${server.address()?.port}` ].includes(host)) { recordRequestStatus(403); res.writeHead(403).end("Forbidden"); return }
@@ -66,6 +67,11 @@ export function createUiServer({ port = 0 } = {}) {
       }
       return
     }
+    if (method === "GET" && url.pathname === "/api/errors") {
+      try { send(200, JSON.stringify({ errors: readRecentErrors() })) }
+      catch { send(500, JSON.stringify({ error: "Unable to read recent errors" })) }
+      return
+    }
     if (method === "GET" && url.pathname === "/api/events") {
       recordRequestStatus(200)
       res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", ...securityHeaders })
@@ -102,6 +108,17 @@ export function createUiServer({ port = 0 } = {}) {
     } catch { send(400, JSON.stringify({ error: "Invalid request" })) }
   })
   server.on("clientError", (_error, socket) => { recordRequestStatus(400); socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n") })
+  const notifyRefresh = () => {
+    if (refreshTimer) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined
+      if (clients.size) recordSseRefresh()
+      for (const client of clients) {
+        if (client.writableEnded) { if (clients.delete(client)) recordSseClient(-1); continue }
+        try { client.write("data: refresh\n\n") } catch { if (clients.delete(client)) recordSseClient(-1); recordServerError() }
+      }
+    }, 100)
+  }
   try {
     const directory = dirname(storePath)
     const metricsName = basename(metricsPath)
@@ -110,33 +127,37 @@ export function createUiServer({ port = 0 } = {}) {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
     watcher = watch(directory, (_event, filename) => {
       if (filename && !watched.has(filename)) return
-      if (refreshTimer) return
-      refreshTimer = setTimeout(() => {
-        refreshTimer = undefined
-        if (clients.size) recordSseRefresh()
-        for (const client of clients) {
-          if (client.writableEnded) { if (clients.delete(client)) recordSseClient(-1); continue }
-          try { client.write("data: refresh\n\n") } catch { if (clients.delete(client)) recordSseClient(-1); recordServerError() }
-        }
-      }, 100)
+      notifyRefresh()
     })
     watcher.unref?.()
     watcher.on("error", () => { watcher?.close(); watcher = undefined })
   } catch {}
+  try {
+    const errorDirectory = dirname(errorLogPath())
+    const watchedErrors = new Set([basename(errorLogPath()), `${basename(errorLogPath())}.1`])
+    mkdirSync(errorDirectory, { recursive: true, mode: 0o700 })
+    errorLogWatcher = watch(errorDirectory, (_event, filename) => {
+      if (filename && !watchedErrors.has(filename.toString())) return
+      notifyRefresh()
+    })
+    errorLogWatcher.unref?.()
+    errorLogWatcher.on("error", () => { errorLogWatcher?.close(); errorLogWatcher = undefined })
+  } catch {}
   server.closeStreams = () => { const count = clients.size; for (const client of clients) { try { client.end() } catch {} } clients.clear(); if (count) recordSseClient(-count) }
-  server.on("close", () => { clearTimeout(refreshTimer); watcher?.close(); server.closeStreams() })
+  server.on("close", () => { clearTimeout(refreshTimer); watcher?.close(); errorLogWatcher?.close(); server.closeStreams() })
   server.habitToken = token
   return server.listen(port, "127.0.0.1")
 }
 
 let uiServer
 
-const ipcFiles = () => {
+const ipcFiles = (owner = "opencode") => {
   const base = process.env.XDG_RUNTIME_DIR && isSafeRuntimeDir(process.env.XDG_RUNTIME_DIR)
     ? join(process.env.XDG_RUNTIME_DIR, "habit-memory")
     : join(homedir(), ".local", "share", "habit-memory")
   const dir = base
-  return { dir, descriptor: join(dir, "ui-control.json"), token: join(dir, "ui-control.token"), lock: join(dir, "ui-control.lock") }
+  const prefix = owner === "project" ? "ui-project-control" : "ui-control"
+  return { dir, descriptor: join(dir, `${prefix}.json`), token: join(dir, `${prefix}.token`), lock: join(dir, `${prefix}.lock`) }
 }
 
 function isSafeRuntimeDir(path) {
@@ -188,15 +209,22 @@ function controlRequest(descriptor, { method = "GET", path = controlPath, timeou
 async function requestRemoteStop(descriptor) {
   try {
     const response = await controlRequest(descriptor, { method: "POST", timeout: 1000 })
-    if (response.status !== 200 || response.body !== "stopping") return false
+    if (response.status !== 200 || response.body !== "stopping") {
+      logCommandError(descriptor.paths.descriptor.includes("ui-project-control") ? "npm run ui:stop" : "habit-memory-ui-stop", "request-stop", new Error(`UI control endpoint returned HTTP ${response.status}`))
+      return false
+    }
     const deadline = Date.now() + 1500
     while (Date.now() < deadline) {
       try { await controlRequest(descriptor, { path: "/", timeout: 100, bodyLimit: 0 }) }
       catch (error) { if (error.code === "ECONNREFUSED") return true }
       await new Promise((done) => setTimeout(done, 25))
     }
+    logCommandError(descriptor.paths.descriptor.includes("ui-project-control") ? "npm run ui:stop" : "habit-memory-ui-stop", "wait-stop", new Error("UI control endpoint did not stop before timeout"))
     return false
-  } catch { return false }
+  } catch (error) {
+    if (error.code !== "ECONNREFUSED") logCommandError(descriptor.paths.descriptor.includes("ui-project-control") ? "npm run ui:stop" : "habit-memory-ui-stop", "request-stop", error)
+    return false
+  }
 }
 
 async function remoteIsActive(descriptor) {
@@ -204,7 +232,7 @@ async function remoteIsActive(descriptor) {
     try {
       const response = await controlRequest(descriptor)
       if (response.status === 200 && response.body === "active") return true
-      throw new Error("Existing UI control endpoint returned an unexpected response")
+      throw new Error(`Existing UI control endpoint returned an unexpected response (HTTP ${response.status})`)
     } catch (error) {
       if (error.code === "ECONNREFUSED") return false
       if (error.code === "ETIMEDOUT") throw new Error("Existing UI control endpoint timed out")
@@ -237,8 +265,8 @@ async function removeOwned(paths, token, descriptorIdentity) {
   } catch {}
 }
 
-async function installControl(server) {
-  const paths = ipcFiles()
+async function installControl(server, owner) {
+  const paths = ipcFiles(owner)
   await mkdir(paths.dir, { recursive: true, mode: 0o700 })
   const dirStat = await lstat(paths.dir)
   if (!dirStat.isDirectory() || dirStat.uid !== process.getuid?.() || (dirStat.mode & 0o077)) throw new Error("Unsafe Habit Memory control directory")
@@ -248,12 +276,16 @@ async function installControl(server) {
     catch (error) { if (error.code === "ENOENT") descriptorExists = false; else throw error }
     if (descriptorExists) {
       const existing = await readDescriptor(paths)
-      if (await remoteIsActive(existing)) {
+      // A listener that just bound this port cannot be a separate prior server.
+      if (existing.port === server.address().port) {
+        await removeStale(paths, existing)
+      } else if (await remoteIsActive(existing)) {
         server.remotePort = existing.port
         server.close()
         return
+      } else {
+        await removeStale(paths, existing)
       }
-      await removeStale(paths, existing)
     }
     const token = server.habitToken
     let identity
@@ -273,12 +305,13 @@ async function installControl(server) {
   })
 }
 
-export function startUiServer() {
+export function startUiServer({ owner = "opencode" } = {}) {
   if (uiServer?.listening) return uiServer
   const server = createUiServer({ port: Number(process.env.HABIT_MEMORY_UI_PORT || 43109) })
+  server.controlOwner = owner
   uiServer = server
   server.controlReady = new Promise((resolve, reject) => {
-    server.once("listening", () => installControl(server).then(resolve, (error) => {
+    server.once("listening", () => installControl(server, owner).then(resolve, (error) => {
       server.close()
       reject(error)
     }))
@@ -289,12 +322,31 @@ export function startUiServer() {
   return server
 }
 
-export async function stopUiServer() {
-  if (!uiServer?.listening) return withLock(ipcFiles(), async () => { const descriptor = await readDescriptor(); if (!await requestRemoteStop(descriptor)) return false; return true }).catch(() => false)
+export async function stopUiServer({ owner = "opencode" } = {}) {
+  if (!uiServer?.listening || uiServer.controlOwner !== owner) {
+    const paths = ipcFiles(owner)
+    return withLock(paths, async () => { const descriptor = await readDescriptor(paths); if (!await requestRemoteStop(descriptor)) return false; return true }).catch((error) => {
+      if (error.code !== "ENOENT") logCommandError(owner === "project" ? "npm run ui:stop" : "habit-memory-ui-stop", "read-control-state", error)
+      return false
+    })
+  }
   const server = uiServer
   await server.controlReady
   server.closeStreams()
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve(true)))
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) startUiServer()
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try {
+    const server = startUiServer({ owner: "project" })
+    await new Promise((resolve, reject) => {
+      if (server.listening) return resolve()
+      server.once("listening", resolve)
+      server.once("error", reject)
+    })
+    await server.controlReady
+  } catch (error) {
+    logCommandError("npm run ui", "startup", error)
+    process.exitCode = 1
+  }
+}

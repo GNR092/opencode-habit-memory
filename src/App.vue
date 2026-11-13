@@ -15,6 +15,9 @@ export default {
     const metrics = ref(null)
     const metricsError = ref('')
     const metricsLoading = ref(false)
+    const recentErrors = ref([])
+    const recentErrorsError = ref('')
+    const recentErrorsLoading = ref(false)
     const rangeDays = ref(30)
     const metricProject = ref('')
     const metricAgent = ref('')
@@ -124,6 +127,15 @@ export default {
       const date = new Date(value)
       return Number.isFinite(date.getTime()) ? date.toLocaleTimeString(language.value) : '—'
     }
+    const formatRecentErrorTime = (value) => {
+      const date = new Date(value)
+      return Number.isFinite(date.getTime()) ? date.toLocaleString(language.value, { dateStyle: 'short', timeStyle: 'medium' }) : '—'
+    }
+    const recentErrorReason = (reason) => [
+      reason?.code,
+      reason?.syscall && `${t('llamada', 'call')}: ${reason.syscall}`,
+      !reason?.code && reason?.name,
+    ].filter(Boolean).join(' · ') || t('Error técnico', 'Technical error')
     const pluginHookLabel = (name) => ({
       "session.prompt": t('Prompt de sesión', 'Session prompt'),
       "session.context": t('Contexto de sesión', 'Session context'),
@@ -223,6 +235,22 @@ export default {
       }
     }
 
+    let recentErrorsRequest = 0
+    async function loadRecentErrors() {
+      const requestId = ++recentErrorsRequest
+      recentErrorsLoading.value = true
+      recentErrorsError.value = ''
+      try {
+        const result = await request('/api/errors')
+        if (requestId !== recentErrorsRequest) return
+        recentErrors.value = Array.isArray(result?.errors) ? result.errors : []
+      } catch (e) {
+        if (requestId === recentErrorsRequest) recentErrorsError.value = e.message
+      } finally {
+        if (requestId === recentErrorsRequest) recentErrorsLoading.value = false
+      }
+    }
+
     function clearMetricFilters() {
       metricProject.value = ''
       metricAgent.value = ''
@@ -267,7 +295,7 @@ export default {
 
     let stopWatchingHash = () => {}
     let eventSource, refreshTimer
-    const refreshOnVisible = () => { if (!document.hidden) { load(); loadMetrics() } }
+    const refreshOnVisible = () => { if (!document.hidden) { load(); loadMetrics(); loadRecentErrors() } }
     onMounted(() => {
       stopWatchingHash = watchHashView(window, (view) => {
         activeView.value = view
@@ -275,11 +303,12 @@ export default {
       })
       load()
       loadMetrics()
+      loadRecentErrors()
       if (typeof EventSource === 'function') {
         eventSource = new EventSource('/api/events')
         eventSource.onmessage = () => {
           clearTimeout(refreshTimer)
-          refreshTimer = setTimeout(() => { load(); loadMetrics() }, 150)
+          refreshTimer = setTimeout(() => { load(); loadMetrics(); loadRecentErrors() }, 150)
         }
       }
       document.addEventListener('visibilitychange', refreshOnVisible)
@@ -289,9 +318,10 @@ export default {
       eventSource?.close()
       clearTimeout(refreshTimer)
       metricsRequest++
+      recentErrorsRequest++
       document.removeEventListener('visibilitychange', refreshOnVisible)
     })
-    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits, metrics, metricsError, metricsLoading, rangeDays, metricProject, metricAgent, metricProvider, metricModel, metricOptions, metricsEmpty, hasMetricFilters, tokenChart, firstMetricDay, lastMetricDay, cacheDenominator, formatNumber, formatCompact, formatPercent, tokenBreakdown, agentRows, modelRows, projectRows, kindRows, toggleSort, ariaSort, sortIndicator, seriesLabel, metricKindLabel, projectOptionLabel, clearMetricFilters, loadMetrics, plugin, pluginHooks, pluginErrors, pluginHookCalls, pluginHookErrors, pluginErrorTotal, pluginCurrent, pluginEmpty, formatMillis, formatBytes, formatTime, pluginHookLabel, pluginErrorLabel }
+    return { data, error, language, theme, activeView, busy, includeArchived, t, scopes, todoGroups, todoStatuses, todoStatusLabel, reports, trend, bars, hasHabitData, reportTitle, signalLabel, kindLabel, checkpointTitle, projectDirectoryLabel, load, edit, removeCheckpoint, removeScope, clearHabits, metrics, metricsError, metricsLoading, recentErrors, recentErrorsError, recentErrorsLoading, loadRecentErrors, formatRecentErrorTime, recentErrorReason, rangeDays, metricProject, metricAgent, metricProvider, metricModel, metricOptions, metricsEmpty, hasMetricFilters, tokenChart, firstMetricDay, lastMetricDay, cacheDenominator, formatNumber, formatCompact, formatPercent, tokenBreakdown, agentRows, modelRows, projectRows, kindRows, toggleSort, ariaSort, sortIndicator, seriesLabel, metricKindLabel, projectOptionLabel, clearMetricFilters, loadMetrics, plugin, pluginHooks, pluginErrors, pluginHookCalls, pluginHookErrors, pluginErrorTotal, pluginCurrent, pluginEmpty, formatMillis, formatBytes, formatTime, pluginHookLabel, pluginErrorLabel }
   },
 }
 </script>
@@ -745,6 +775,24 @@ export default {
                 </article>
               </div>
             </template>
+            <section class="recent-errors" aria-labelledby="recent-errors-heading">
+              <header class="recent-errors-heading">
+                <h4 id="recent-errors-heading">{{ t('Errores recientes', 'Recent errors') }}</h4>
+                <p class="section-note">{{ t('Hasta 30 registros. Se muestran solo tipo, código y operación; se omiten mensajes, argumentos, prompts e identificadores.', 'Up to 30 entries. Only type, code, and operation are shown; messages, arguments, prompts, and identifiers are omitted.') }}</p>
+              </header>
+              <p v-if="recentErrorsLoading" role="status">{{ t('Leyendo errores recientes…', 'Reading recent errors…') }}</p>
+              <p v-else-if="recentErrorsError" class="notice" role="alert">{{ recentErrorsError }} <button type="button" @click="loadRecentErrors">{{ t('Reintentar', 'Retry') }}</button></p>
+              <p v-else-if="recentErrors.length === 0" class="empty-report">{{ t('No hay errores recientes registrados.', 'No recent errors recorded.') }}</p>
+              <ol v-else class="recent-error-list">
+                <li v-for="entry in recentErrors" :key="`${entry.time}:${entry.command}:${entry.phase}`" class="recent-error">
+                  <div class="recent-error-meta">
+                    <time :datetime="entry.time">{{ formatRecentErrorTime(entry.time) }}</time>
+                    <span class="recent-error-command"><code>{{ entry.command }}</code> · {{ entry.phase }}</span>
+                  </div>
+                  <p class="recent-error-reason">{{ t('Motivo técnico', 'Technical reason') }}: {{ recentErrorReason(entry.reason) }}</p>
+                </li>
+              </ol>
+            </section>
           </section>
         </section>
       </main>

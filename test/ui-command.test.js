@@ -65,23 +65,23 @@ test("/habit-memory-ui starts once and reuses its URL", async () => {
   }
 })
 
-test("UI stop from another process closes the owning listener", async () => {
+test("project UI stop from another process closes the project listener", async () => {
   const home = await mkdtemp(join(tmpdir(), "habit-ui-cross-process-"))
   const runtime = join(home, "runtime")
   await mkdir(runtime, { mode: 0o700 })
   const env = { ...process.env, HABIT_MEMORY_UI_PORT: "0", XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(home, "data") }
   const moduleUrl = new URL("../src/ui-server.js", import.meta.url).href
   const portFile = join(home, "starter-port.txt")
-  const starter = spawn(process.execPath, ["--input-type=module", "-e", `import {writeFileSync} from "node:fs"; import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>writeFileSync(${JSON.stringify(portFile)}, String(s.remotePort||s.address().port)), (error)=>writeFileSync(${JSON.stringify(portFile)}, "error:"+(error?.stack||error))); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "ignore", "inherit"] })
+  const starter = spawn(process.execPath, ["--input-type=module", "-e", `import {writeFileSync} from "node:fs"; import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer({owner:"project"}); s.controlReady.then(()=>writeFileSync(${JSON.stringify(portFile)}, String(s.remotePort||s.address().port)), (error)=>writeFileSync(${JSON.stringify(portFile)}, "error:"+(error?.stack||error))); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "ignore", "inherit"] })
   let stopper
   try {
     const status = await readStatus(portFile, 10000, "starter startup")
     assert.doesNotMatch(status, /^error:/, status)
     const port = Number(status)
     assert.ok(port > 0)
-    const descriptor = join(runtime, "habit-memory", "ui-control.json")
+    const descriptor = join(runtime, "habit-memory", "ui-project-control.json")
     await deadline((async () => { while (true) { try { await access(descriptor); return } catch {} await new Promise((resolve) => setTimeout(resolve, 20)) } })(), 10000, "descriptor publication")
-    stopper = runStopChild(moduleUrl, env)
+    stopper = runStopChild(moduleUrl, env, "project")
     const stop = await deadline(stopper, 10000, "stop child")
     assert.equal(stop, "true")
     const [code] = await deadline(once(starter, "exit"), 10000, "starter exit")
@@ -89,6 +89,34 @@ test("UI stop from another process closes the owning listener", async () => {
     const probe = createServer()
     await new Promise((resolve, reject) => probe.once("error", reject).listen(port, "127.0.0.1", resolve))
     await new Promise((resolve) => probe.close(resolve))
+  } finally {
+    await Promise.all([starter, stopper?.child].filter(Boolean).map(killAndWait))
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test("project UI stop does not stop the OpenCode-owned listener", async () => {
+  const home = await mkdtemp(join(tmpdir(), "habit-ui-owner-"))
+  const runtime = join(home, "runtime")
+  await mkdir(runtime, { mode: 0o700 })
+  const env = { ...process.env, HABIT_MEMORY_UI_PORT: "0", XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(home, "data") }
+  const moduleUrl = new URL("../src/ui-server.js", import.meta.url).href
+  const portFile = join(home, "opencode-port.txt")
+  const starter = spawn(process.execPath, ["--input-type=module", "-e", `import {writeFileSync} from "node:fs"; import {startUiServer} from ${JSON.stringify(moduleUrl)}; const s=startUiServer(); s.controlReady.then(()=>writeFileSync(${JSON.stringify(portFile)}, String(s.address().port)), (error)=>writeFileSync(${JSON.stringify(portFile)}, "error:"+(error?.stack||error))); const timer=setInterval(()=>{},1000); s.once('close',()=>clearInterval(timer))`], { env, stdio: ["ignore", "ignore", "inherit"] })
+  let stopper
+  try {
+    const status = await readStatus(portFile, 10000, "OpenCode startup")
+    assert.doesNotMatch(status, /^error:/, status)
+    const port = Number(status)
+    assert.ok(port > 0)
+    stopper = runStopChild(moduleUrl, env, "project")
+    assert.equal(await deadline(stopper, 10000, "project stop"), "false")
+    const probe = createServer()
+    const remainsListening = await new Promise((resolve) => {
+      probe.once("error", (error) => resolve(error.code === "EADDRINUSE"))
+      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(false)))
+    })
+    assert.equal(remainsListening, true)
   } finally {
     await Promise.all([starter, stopper?.child].filter(Boolean).map(killAndWait))
     await rm(home, { recursive: true, force: true })
@@ -258,8 +286,8 @@ test("concurrent UI starts converge on one listener", async () => {
   }
 })
 
-function runStopChild(moduleUrl, env) {
-  const child = spawn(process.execPath, ["--input-type=module", "-e", `import {stopUiServer} from ${JSON.stringify(moduleUrl)}; process.stdout.write(String(await stopUiServer()))`], { env, stdio: ["ignore", "pipe", "pipe"] })
+function runStopChild(moduleUrl, env, owner = "opencode") {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `import {stopUiServer} from ${JSON.stringify(moduleUrl)}; process.stdout.write(String(await stopUiServer({owner:${JSON.stringify(owner)}})))`], { env, stdio: ["ignore", "pipe", "pipe"] })
   let stdout = "", stderr = ""
   child.stdout.on("data", (data) => { stdout += data })
   child.stderr.on("data", (data) => { stderr += data })

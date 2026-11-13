@@ -38,6 +38,7 @@
   "scripts": {
     "mcp": "node src/mcp.js",
     "ui": "node src/ui-server.js",
+    "ui:stop": "node src/ui-stop.js",
     "test": "node --test",
     "build": "vite build",
     "prepublishOnly": "npm test && npm run build"

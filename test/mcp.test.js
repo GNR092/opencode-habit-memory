@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 test('MCP exposes no operation for deleting aggregated habits', async () => {
   const home = await mkdtemp(join(tmpdir(), 'habit-memory-mcp-'))
   const previous = process.env.XDG_DATA_HOME
-  const env = { ...process.env, XDG_DATA_HOME: home }
+  const env = { ...process.env, XDG_DATA_HOME: home, XDG_STATE_HOME: home }
   process.env.XDG_DATA_HOME = home
   try {
     const store = await import('../src/store.js')
@@ -41,6 +41,10 @@ test('MCP exposes no operation for deleting aggregated habits', async () => {
     assert.equal(list.result.tools.find(({ name }) => name === 'checkpoint_save').inputSchema.properties.sessionTitle, undefined)
     assert.equal(list.result.tools.find(({ name }) => name === 'checkpoint_save').inputSchema.properties.projectDirectoryName, undefined)
     assert.deepEqual((await store.getData()).habits.counts, { 'tool:bash': 1 })
+    const log = await readFile(join(home, 'habit-memory-plugin', 'errors.log'), 'utf8')
+    assert.match(log, /"command":"MCP tools\/call"/)
+    assert.match(log, /"phase":"execute"/)
+    assert.doesNotMatch(log, /project-hash|session-hash|confirm/)
   } finally {
     if (previous === undefined) delete process.env.XDG_DATA_HOME
     else process.env.XDG_DATA_HOME = previous
