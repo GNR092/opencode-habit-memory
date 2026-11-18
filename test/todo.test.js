@@ -52,10 +52,16 @@ test("project TODO tools resume pending work and keep updates scoped", async () 
   const list = tools.get("project_todo_list"), create = tools.get("project_todo_create")
   const update = tools.get("project_todo_update"), archive = tools.get("project_todo_archive")
   assert.ok(list && create && update && archive)
+  assert.equal(create.input.properties.task.maxLength, undefined)
+  assert.equal(update.input.properties.task.maxLength, undefined)
 
-  const created = JSON.parse((await create.execute({ task: "Implement a durable TODO" }, { sessionID: "todo-save" })).content)
+  const longTask = `Implement a durable TODO with enough context: ${"describe implementation details and validation steps. ".repeat(8).trimEnd()}`
+  assert.ok(longTask.length > 240)
+  const created = JSON.parse((await create.execute({ task: longTask }, { sessionID: "todo-save" })).content)
   assert.equal(created.status, "pending")
-  assert.equal((await getData()).todos.find(({ id }) => id === created.id).projectDirectoryName, "habit-memory")
+  const storedCreatedTodo = (await getData()).todos.find(({ id }) => id === created.id)
+  assert.equal(storedCreatedTodo.projectDirectoryName, "habit-memory")
+  assert.equal(storedCreatedTodo.task, longTask)
   assert.deepEqual(JSON.parse((await list.execute({}, { sessionID: "todo-other" })).content), [])
 
   const prompt = hooks.get("session:prompt")
@@ -66,6 +72,10 @@ test("project TODO tools resume pending work and keep updates scoped", async () 
   assert.match(resumedText, /Implement a durable TODO/)
   assert.match(resumedText, /project_todo_update inmediatamente/)
   assert.match(resumedText, /verifica el estado real del repositorio/)
+
+  const updatedLongTask = `${longTask} Include the exact acceptance criteria.`
+  assert.match((await update.execute({ id: created.id, task: updatedLongTask }, { sessionID: "todo-save" })).content, /actualizado/)
+  assert.equal((await getData()).todos.find(({ id }) => id === created.id).task, updatedLongTask)
 
   await prompt({ sessionID: "todo-new", messageID: "new", prompt: { text: "Inicia una tarea nueva", agents: [] } })
   const fresh = { sessionID: "todo-new", system: [] }

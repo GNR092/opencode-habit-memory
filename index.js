@@ -434,7 +434,7 @@ export default {
         description: "Crea un TODO breve y accionable para el proyecto actual; no guardes prompts, transcripciones ni secretos.",
         input: {
           type: "object",
-          properties: { task: { type: "string", maxLength: 240 } },
+          properties: { task: { type: "string" } },
           required: ["task"],
           additionalProperties: false,
         },
@@ -453,7 +453,7 @@ export default {
           type: "object",
           properties: {
             id: { type: "string", maxLength: 80 },
-            task: { type: "string", maxLength: 240 },
+            task: { type: "string" },
             status: { type: "string", enum: ["pending", "completed"] },
           },
           required: ["id"],
